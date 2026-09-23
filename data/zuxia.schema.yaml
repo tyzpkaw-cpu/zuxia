@@ -1,0 +1,106 @@
+# Rime schema
+# encoding: utf-8
+
+schema:
+  schema_id: zuxia
+  name: "应物音形足下输入方案"
+  version: "0.1.0"
+  author:
+    - "应物音形足下输入方案"
+  description: |
+    音形分工：全拼承担读音，部件承担字形。
+    单字：全拼 → 加一个部件码 → 加第二个部件码。
+    部件码取该部件「名称」的拼音首字母，氵取水(s)、宀取宝盖(b)。
+    一个部件可有多个通行叫法，多个码都认；
+    任意两个部件均可，先后顺序不限。
+    不使用语言模型、用户学习或云端预测。
+
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: [中文, 西文]
+
+engine:
+  processors:
+    - ascii_composer
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ascii_segmentor
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - punct_translator
+    - table_translator
+  filters:
+    - uniquifier
+
+# Shift tap switches between Chinese and Western input.
+ascii_composer:
+  good_old_caps_lock: true
+  switch_key:
+    Shift_L: commit_code
+    Shift_R: commit_code
+    Control_L: noop
+    Control_R: noop
+    Caps_Lock: clear
+    Eisu_toggle: clear
+
+# Chinese text wants Chinese marks.
+punctuator:
+  half_shape:
+    ",": "，"
+    ".": "。"
+    ";": "；"
+    ":": "："
+    "?": "？"
+    "!": "！"
+    "\\": "、"
+    "<": "《"
+    ">": "》"
+    "(": "（"
+    ")": "）"
+    "[": "【"
+    "]": "】"
+    "{": "「"
+    "}": "」"
+    "'": { pair: ["‘", "’"] }
+    '"': { pair: ["“", "”"] }
+    "^": "……"
+    "_": "——"
+    "~": "～"
+    "$": "￥"
+    "@": "＠"
+    "#": "＃"
+    "%": "％"
+    "&": "＆"
+    "*": "＊"
+    "+": "＋"
+    "-": "－"
+    "=": "＝"
+    "/": "／"
+    "|": "｜"
+    "`": "｀"
+
+speller:
+  alphabet: abcdefghijklmnopqrstuvwxyz
+  initials: abcdefghijklmnopqrstuvwxyz
+  delimiter: " '"
+  max_code_length: 96
+  auto_select: false
+
+translator:
+  dictionary: zuxia
+  enable_charset_filter: true
+  enable_completion: true
+  enable_sentence: false
+  enable_user_dict: false
+  encode_commit_history: false
+  max_phrase_length: 12
+
+menu:
+  page_size: 9
