@@ -56,6 +56,10 @@ target_compile_options(ZuxiaTSF PRIVATE
   /utf-8 /W4 /EHsc /permissive- /Zc:__cplusplus)
 target_link_libraries(ZuxiaTSF PRIVATE
   ole32 oleaut32 uuid advapi32 shell32 user32 gdi32)
+# Reproducible build: without this the PE header carries the build
+# time, so the same source yields a different binary every time and
+# nobody can verify a released DLL against this tree.
+target_link_options(ZuxiaTSF PRIVATE /Brepro)
 set_target_properties(ZuxiaTSF PROPERTIES
   OUTPUT_NAME "ZuxiaTSF"
   PREFIX ""
@@ -73,9 +77,12 @@ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/" DESTINATION data
         FILES_MATCHING PATTERN "*.yaml")
 install(FILES README.md LICENSE-CODE.txt THIRD_PARTY_NOTICES.md
         DESTINATION docs)
-# 待你定夺.md is a decision log kept for the maintainer, not product
-# documentation, so it stays out of the installed tree.
-install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/docs/" DESTINATION docs
-        FILES_MATCHING PATTERN "*.md" PATTERN "待你定夺.md" EXCLUDE)
+# Nothing else from docs/ ships. Two reasons: the maintainer's notes there
+# are named in Chinese, and makecab parses the cabinet directive file in
+# the system ANSI code page -- a non-ASCII member name reaches it as "????"
+# and aborts the build (make-setup.ps1 now guards against that). Keeping
+# payload names ASCII also keeps the build identical on a machine with a
+# different code page. User-facing docs are the three files installed
+# above: README.md, LICENSE-CODE.txt, THIRD_PARTY_NOTICES.md.
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/licenses/"
         DESTINATION docs/licenses)

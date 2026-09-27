@@ -98,7 +98,10 @@ void LogEvent(const wchar_t* event, const std::wstring& detail) {
   HANDLE mutex = CreateMutexW(nullptr, FALSE, kMutexName);
   if (mutex) WaitForSingleObject(mutex, 2000);
 
-  HANDLE file = CreateFileW(g_path.c_str(), FILE_APPEND_DATA,
+  // FILE_WRITE_DATA as well: TruncateIfLarge calls SetEndOfFile on this
+  // handle, which fails without it, so the size cap above never worked.
+  HANDLE file = CreateFileW(g_path.c_str(),
+                            FILE_APPEND_DATA | FILE_WRITE_DATA,
                             FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file != INVALID_HANDLE_VALUE) {

@@ -3,7 +3,11 @@ param(
     # Skip straight to packaging when dist\Zuxia is already staged.
     [switch]$SkipBuild,
     [ValidateSet('Debug', 'Release', 'RelWithDebInfo')]
-    [string]$Configuration = 'Release'
+    [string]$Configuration = 'Release',
+    # Sign every shipped binary. Certificate configuration comes from the
+    # environment -- see scripts\sign-file.ps1. Without a certificate an
+    # installer cannot be promised to run on every Windows device.
+    [switch]$Sign
 )
 
 # Produces ZuxiaSetup.exe: a single 32-bit installer carrying the x64 and x86
@@ -19,6 +23,18 @@ $SetupDir = $PSScriptRoot
 $Root = (Resolve-Path (Join-Path $SetupDir '..\..')).Path
 $Stage = Join-Path $Root 'dist\Zuxia'
 $Out = Join-Path $Root 'dist'
+
+# Signing has to happen at three points, in this order: the text
+# services before the cabinet is built, the uninstaller before it is
+# embedded in the setup resources (build-installer.bat calls back into
+# this path through ZX_SIGN_CMD), and the setup itself last.
+$signScript = Join-Path $Root 'scripts\sign-file.ps1'
+if ($Sign) {
+    if (-not (Test-Path $signScript)) { throw "Missing $signScript." }
+    $env:ZX_SIGN_CMD = $signScript
+} else {
+    Remove-Item Env:\ZX_SIGN_CMD -ErrorAction SilentlyContinue
+}
 
 function Get-RelativePath {
     param([string]$From, [string]$To)
@@ -55,11 +71,63 @@ if (-not (Test-Path (Join-Path $Stage 'x64\ZuxiaTSF.dll'))) {
     throw "Missing staged build at $Stage. Run scripts\build.ps1 first."
 }
 
+if ($Sign) {
+    Write-Host '[1b/5] Signing the text services...'
+    foreach ($arch in @('x64', 'x86')) {
+        $dll = Join-Path $Stage "$arch\ZuxiaTSF.dll"
+        if (-not (Test-Path $dll)) { continue }
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $signScript $dll
+        if ($LASTEXITCODE -ne 0) { throw "Signing failed: $dll" }
+    }
+}
+
 Write-Host '[2/5] Writing the cabinet directive file...'
+# A manifest of the payload, written before the cabinet so that it
+# travels inside it. It describes the files as staged, which are
+# exactly the files the installer extracts -- so any device can prove
+# afterwards that every one landed intact (scripts/verify-install.ps1).
+# A stale manifest from an earlier run is dropped first: it must not be
+# hashed into itself.
+$manifestPath = Join-Path $Stage 'MANIFEST.sha256'
+if (Test-Path $manifestPath) { Remove-Item $manifestPath -Force }
+$files = Get-ChildItem $Stage -Recurse -File |
+    Where-Object { $_.Extension -ne '.cab' -and $_.Name -ne 'MANIFEST.sha256' } |
+    Sort-Object FullName
+if (-not $files) { throw "No files staged under $Stage." }
+
+# makecab reads the directive file in the system ANSI code page, so a
+# non-ASCII member name reaches it as "????" and the cabinet fails to
+# build -- with an error that says nothing about the real cause. Catch it
+# here instead, and keep the payload locale-independent: the file names
+# inside the cabinet must be ASCII whatever the build machine's code page.
+$nonAscii = @($files | Where-Object {
+    $_.FullName.Substring($Stage.Length) -match '[^\x00-\x7F]' })
+if ($nonAscii.Count -gt 0) {
+    $names = ($nonAscii | ForEach-Object { $_.FullName.Substring($Stage.Length) }) -join ', '
+    throw ("Payload file names must be ASCII; makecab cannot package these: " + $names)
+}
+
+# The cabinet stores each file's own timestamp, so /Brepro on the
+# linkers is not enough by itself: without a fixed stamp here, two
+# builds of identical source still produce different cabinets. Every
+# staged file gets one constant; the manifest gets it after writing.
+$stamp = [datetime]::new(2020, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
+foreach ($file in $files) { $file.LastWriteTimeUtc = $stamp }
+
+$manifestLines = foreach ($file in $files) {
+    $relative = $file.FullName.Substring($Stage.Length).TrimStart('\')
+    $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLower()
+    "$hash *$relative"
+}
+# LF only: a trailing CR makes the name unreadable to sha256sum -c.
+[IO.File]::WriteAllText($manifestPath, ($manifestLines -join "`n") + "`n",
+    [Text.Encoding]::ASCII)
+(Get-Item $manifestPath).LastWriteTimeUtc = $stamp
+
+# Re-read so the manifest itself travels in the cabinet.
 $files = Get-ChildItem $Stage -Recurse -File |
     Where-Object { $_.Extension -ne '.cab' } |
     Sort-Object FullName
-if (-not $files) { throw "No files staged under $Stage." }
 
 # makecab parses the directive file in the system ANSI code page, so an
 # absolute path containing non-ASCII characters (a Chinese user name, say)

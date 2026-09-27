@@ -24,6 +24,16 @@ int RunUninstall(const std::wstring& root) {
   if (zx::FileExists(x64)) zx::RegisterDll(zx::Regsvr32For64(), x64, true);
   if (zx::FileExists(x86)) zx::RegisterDll(zx::Regsvr32For32(), x86, true);
 
+  // On ARM64 the x64 CLSID and the TSF language profile were published
+  // by the installer directly (see setup.cpp): no 64-bit regsvr32 exists
+  // there that can unload an x64 DLL, so remove the keys instead. Both
+  // live in the 64-bit view / the shared CTF store, which is what
+  // zx::NativeView() selects.
+  if (zx::IsArm64OS()) {
+    zx::RemoveKey(L"SOFTWARE\\Classes\\CLSID\\" ZX_CLSID);
+    zx::RemoveKey(L"SOFTWARE\\Microsoft\\CTF\\TIP\\" ZX_CLSID);
+  }
+
   zx::RemoveKey(ZX_ARP_KEY);
   zx::RemoveKey(ZX_PRODUCT_KEY);
 
@@ -50,34 +60,17 @@ int RunUninstall(const std::wstring& root) {
   return 0;
 }
 
-// Copies this binary out of the install tree and hands the work to the copy.
-int Relaunch(const std::wstring& root) {
-  const std::wstring temp = zx::TempDir() + L"zuxia-uninstall-run.exe";
-  DeleteFileW(temp.c_str());
-  if (!CopyFileW(zx::SelfPath().c_str(), temp.c_str(), FALSE)) {
-    // Falling back to an in-place uninstall still works; only the uninstaller
-    // itself will be left behind for the reboot sweep.
-    return RunUninstall(root);
-  }
-
-  std::wstring args = L"/run \"" + root + L"\"";
-  if (g_silent) args += L" /silent";
-  if (g_purge) args += L" /purge";
-
-  SHELLEXECUTEINFOW info = {};
-  info.cbSize = sizeof(info);
-  info.fMask = SEE_MASK_NOCLOSEPROCESS;
-  info.lpVerb = L"open";
-  info.lpFile = temp.c_str();
-  info.lpParameters = args.c_str();
-  info.nShow = SW_SHOWNORMAL;
-  if (!ShellExecuteExW(&info)) {
-    DeleteFileW(temp.c_str());
-    return RunUninstall(root);
-  }
-  if (info.hProcess) CloseHandle(info.hProcess);
-  return 0;
-}
+// Uninstalls in place.
+//
+// This binary used to copy itself into %TEMP% and run the copy, so that the
+// install directory could be removed whole. But %TEMP% is chosen by the
+// installing user (HKCU\Environment\TMP, repointable by any process of that
+// account), the copy was made under a fixed name, and the file was written
+// before it was executed -- an elevated process running a file an
+// unprivileged user can replace. DeleteTree already parks a running
+// executable as *.old and reaps it at the next boot, so the copy bought
+// nothing and cost that. This is the path /run mode has always used.
+int UninstallInPlace(const std::wstring& root) { return RunUninstall(root); }
 
 }  // namespace
 
@@ -146,5 +139,5 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     }
   }
 
-  return Relaunch(root);
+  return UninstallInPlace(root);
 }

@@ -125,12 +125,12 @@ DELETIONS = {
 }
 
 # ---------------------------------------------------------------------------
-# The one place where 足下 needs different behaviour rather than a different
-# name. 衡码's structure code is a single fixed suffix, so a character has one
-# complete code and the annotation is short by construction. 足下 accepts any
-# two components in either order, so one character carries many equally
-# complete codes -- 行 has nine, 应 six -- and printing them all would fill the
-# candidate row.
+# The one place where 足下 genuinely needs different behaviour rather than a
+# different name. 衡码's structure code is a single fixed suffix, so a
+# character has one complete code and the candidate annotation is short by
+# construction. 足下 accepts any two components in either order, so one
+# character carries many equally complete codes -- 行 has nine, 应 six -- and
+# printing them all would fill the candidate row.
 # ---------------------------------------------------------------------------
 ANNOTATE_OLD = """  std::wstring comment;
   for (const std::wstring& code : found->second) {
@@ -252,10 +252,170 @@ EXTRA_PAIRS = {
     "CMakeLists.txt": [
         ('install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/docs/" DESTINATION docs\n'
          '        FILES_MATCHING PATTERN "*.md")',
-         '# 待你定夺.md is a decision log kept for the maintainer, not product\n'
-         '# documentation, so it stays out of the installed tree.\n'
-         'install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/docs/" DESTINATION docs\n'
-         '        FILES_MATCHING PATTERN "*.md" PATTERN "待你定夺.md" EXCLUDE)'),
+         '# Nothing else from docs/ ships. Two reasons: the maintainer\'s notes there\n'
+         '# are named in Chinese, and makecab parses the cabinet directive file in\n'
+         '# the system ANSI code page -- a non-ASCII member name reaches it as "????"\n'
+         '# and aborts the build (make-setup.ps1 now guards against that). Keeping\n'
+         '# payload names ASCII also keeps the build identical on a machine with a\n'
+         '# different code page. User-facing docs are the three files installed\n'
+         '# above: README.md, LICENSE-CODE.txt, THIRD_PARTY_NOTICES.md.'),
+        # Reproducible binaries: by default the linker stamps the current time
+        # into the PE header, so two builds of identical source differ and no
+        # third party can check a released DLL against the source it claims to
+        # come from. /Brepro replaces that stamp with a hash of the content.
+        ('target_link_libraries(ZuxiaTSF PRIVATE\n'
+         '  ole32 oleaut32 uuid advapi32 shell32 user32 gdi32)',
+         'target_link_libraries(ZuxiaTSF PRIVATE\n'
+         '  ole32 oleaut32 uuid advapi32 shell32 user32 gdi32)\n'
+         '# Reproducible build: without this the PE header carries the build\n'
+         '# time, so the same source yields a different binary every time and\n'
+         '# nobody can verify a released DLL against this tree.\n'
+         'target_link_options(ZuxiaTSF PRIVATE /Brepro)'),
+    ],
+    # Same reason as CMakeLists above: the installer and the uninstaller are
+    # binaries too, and the uninstaller's hash goes into the shipped payload.
+    "installer/setup/build-installer.bat": [
+        # uuid.lib carries CLSID_TF_InputProcessorProfiles and
+        # IID_ITfInputProcessorProfiles, which the ARM64 registration path uses
+        # to publish the language profile without regsvr32.
+        ('set LIBS=advapi32.lib shell32.lib user32.lib gdi32.lib ole32.lib',
+         'set LIBS=advapi32.lib shell32.lib user32.lib gdi32.lib ole32.lib uuid.lib'),
+        ('set LINKCOMMON=/SUBSYSTEM:WINDOWS,6.00 /INCREMENTAL:NO /MANIFEST:EMBED '
+         '/MANIFESTINPUT:app.manifest %UAC%',
+         'rem /Brepro: reproducible builds -- no build timestamp in the PE header.\n'
+         'set LINKCOMMON=/SUBSYSTEM:WINDOWS,6.00 /INCREMENTAL:NO /MANIFEST:EMBED '
+         '/MANIFESTINPUT:app.manifest /Brepro %UAC%'),
+        # The uninstaller must be signed *before* setup.rc embeds it: it is
+        # written into the install directory and registered as the uninstall
+        # entry, and an unsigned exe in that position is the single most
+        # suspicious thing a reputation system sees.
+        ('echo [2/4] ZuxiaUninstall.exe\n'
+         'cl %CLFLAGS% /Fo:obj_uninst\\ uninst.cpp uninst.res ^\n'
+         '   /link %LINKCOMMON% /OUT:ZuxiaUninstall.exe %LIBS% || goto :fail\n',
+         'echo [2/4] ZuxiaUninstall.exe\n'
+         'cl %CLFLAGS% /Fo:obj_uninst\\ uninst.cpp uninst.res ^\n'
+         '   /link %LINKCOMMON% /OUT:ZuxiaUninstall.exe %LIBS% || goto :fail\n'
+         '\n'
+         'rem Sign now, while it is still a file of its own: step 3 embeds it.\n'
+         'if defined ZX_SIGN_CMD powershell -NoProfile -ExecutionPolicy Bypass '
+         '-File "%ZX_SIGN_CMD%" "ZuxiaUninstall.exe" || goto :fail\n'),
+        ('echo [4/4] ZuxiaSetup.exe\n'
+         'cl %CLFLAGS% /Fo:obj_setup\\ setup.cpp setup.res ^\n'
+         '   /link %LINKCOMMON% /OUT:ZuxiaSetup.exe %LIBS% setupapi.lib '
+         'comctl32.lib || goto :fail\n',
+         'echo [4/4] ZuxiaSetup.exe\n'
+         'cl %CLFLAGS% /Fo:obj_setup\\ setup.cpp setup.res ^\n'
+         '   /link %LINKCOMMON% /OUT:ZuxiaSetup.exe %LIBS% setupapi.lib '
+         'comctl32.lib || goto :fail\n'
+         '\n'
+         'if defined ZX_SIGN_CMD powershell -NoProfile -ExecutionPolicy Bypass '
+         '-File "%ZX_SIGN_CMD%" "ZuxiaSetup.exe" || goto :fail\n'),
+    ],
+    # The payload carries its own hash manifest, so that any device can prove
+    # after installing that every file landed intact -- scripts/verify-install.ps1
+    # does exactly that, and the installer's own integrity check only proves the
+    # cabinet decompressed. 应物 has no such manifest, which is why an install
+    # that half-succeeded there leaves no trace to check against.
+    "installer/setup/make-setup.ps1": [
+        # -Sign wires scripts\sign-file.ps1 into the release pipeline.
+        ("    # Skip straight to packaging when dist\\Zuxia is already staged.\n"
+         "    [switch]$SkipBuild,\n"
+         "    [ValidateSet('Debug', 'Release', 'RelWithDebInfo')]\n"
+         "    [string]$Configuration = 'Release'\n"
+         ")\n",
+         "    # Skip straight to packaging when dist\\Zuxia is already staged.\n"
+         "    [switch]$SkipBuild,\n"
+         "    [ValidateSet('Debug', 'Release', 'RelWithDebInfo')]\n"
+         "    [string]$Configuration = 'Release',\n"
+         "    # Sign every shipped binary. Certificate configuration comes from the\n"
+         "    # environment -- see scripts\\sign-file.ps1. Without a certificate an\n"
+         "    # installer cannot be promised to run on every Windows device.\n"
+         "    [switch]$Sign\n"
+         ")\n"),
+        ("$Stage = Join-Path $Root 'dist\\Zuxia'\n"
+         "$Out = Join-Path $Root 'dist'\n",
+         "$Stage = Join-Path $Root 'dist\\Zuxia'\n"
+         "$Out = Join-Path $Root 'dist'\n"
+         "\n"
+         "# Signing has to happen at three points, in this order: the text\n"
+         "# services before the cabinet is built, the uninstaller before it is\n"
+         "# embedded in the setup resources (build-installer.bat calls back into\n"
+         "# this path through ZX_SIGN_CMD), and the setup itself last.\n"
+         "$signScript = Join-Path $Root 'scripts\\sign-file.ps1'\n"
+         "if ($Sign) {\n"
+         "    if (-not (Test-Path $signScript)) { throw \"Missing $signScript.\" }\n"
+         "    $env:ZX_SIGN_CMD = $signScript\n"
+         "} else {\n"
+         "    Remove-Item Env:\\ZX_SIGN_CMD -ErrorAction SilentlyContinue\n"
+         "}\n"),
+        ("if (-not (Test-Path (Join-Path $Stage 'x64\\ZuxiaTSF.dll'))) {\n"
+         "    throw \"Missing staged build at $Stage. Run scripts\\build.ps1 first.\"\n"
+         "}\n",
+         "if (-not (Test-Path (Join-Path $Stage 'x64\\ZuxiaTSF.dll'))) {\n"
+         "    throw \"Missing staged build at $Stage. Run scripts\\build.ps1 first.\"\n"
+         "}\n"
+         "\n"
+         "if ($Sign) {\n"
+         "    Write-Host '[1b/5] Signing the text services...'\n"
+         "    foreach ($arch in @('x64', 'x86')) {\n"
+         "        $dll = Join-Path $Stage \"$arch\\ZuxiaTSF.dll\"\n"
+         "        if (-not (Test-Path $dll)) { continue }\n"
+         "        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $signScript $dll\n"
+         "        if ($LASTEXITCODE -ne 0) { throw \"Signing failed: $dll\" }\n"
+         "    }\n"
+         "}\n"),
+        ("Write-Host '[2/5] Writing the cabinet directive file...'\n"
+         "$files = Get-ChildItem $Stage -Recurse -File |\n"
+         "    Where-Object { $_.Extension -ne '.cab' } |\n"
+         "    Sort-Object FullName\n"
+         "if (-not $files) { throw \"No files staged under $Stage.\" }\n",
+         "Write-Host '[2/5] Writing the cabinet directive file...'\n"
+         "# A manifest of the payload, written before the cabinet so that it\n"
+         "# travels inside it. It describes the files as staged, which are\n"
+         "# exactly the files the installer extracts -- so any device can prove\n"
+         "# afterwards that every one landed intact (scripts/verify-install.ps1).\n"
+         "# A stale manifest from an earlier run is dropped first: it must not be\n"
+         "# hashed into itself.\n"
+         "$manifestPath = Join-Path $Stage 'MANIFEST.sha256'\n"
+         "if (Test-Path $manifestPath) { Remove-Item $manifestPath -Force }\n"
+         "$files = Get-ChildItem $Stage -Recurse -File |\n"
+         "    Where-Object { $_.Extension -ne '.cab' -and $_.Name -ne 'MANIFEST.sha256' } |\n"
+         "    Sort-Object FullName\n"
+         "if (-not $files) { throw \"No files staged under $Stage.\" }\n"
+         "\n"
+         "# makecab reads the directive file in the system ANSI code page, so a\n"
+         "# non-ASCII member name reaches it as \"????\" and the cabinet fails to\n"
+         "# build -- with an error that says nothing about the real cause. Catch it\n"
+         "# here instead, and keep the payload locale-independent: the file names\n"
+         "# inside the cabinet must be ASCII whatever the build machine's code page.\n"
+         "$nonAscii = @($files | Where-Object {\n"
+         "    $_.FullName.Substring($Stage.Length) -match '[^\\x00-\\x7F]' })\n"
+         "if ($nonAscii.Count -gt 0) {\n"
+         "    $names = ($nonAscii | ForEach-Object { $_.FullName.Substring($Stage.Length) }) -join ', '\n"
+         "    throw (\"Payload file names must be ASCII; makecab cannot package these: \" + $names)\n"
+         "}\n"
+         "\n"
+         "# The cabinet stores each file's own timestamp, so /Brepro on the\n"
+         "# linkers is not enough by itself: without a fixed stamp here, two\n"
+         "# builds of identical source still produce different cabinets. Every\n"
+         "# staged file gets one constant; the manifest gets it after writing.\n"
+         "$stamp = [datetime]::new(2020, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)\n"
+         "foreach ($file in $files) { $file.LastWriteTimeUtc = $stamp }\n"
+         "\n"
+         "$manifestLines = foreach ($file in $files) {\n"
+         "    $relative = $file.FullName.Substring($Stage.Length).TrimStart('\\')\n"
+         "    $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLower()\n"
+         "    \"$hash *$relative\"\n"
+         "}\n"
+         "# LF only: a trailing CR makes the name unreadable to sha256sum -c.\n"
+         "[IO.File]::WriteAllText($manifestPath, ($manifestLines -join \"`n\") + \"`n\",\n"
+         "    [Text.Encoding]::ASCII)\n"
+         "(Get-Item $manifestPath).LastWriteTimeUtc = $stamp\n"
+         "\n"
+         "# Re-read so the manifest itself travels in the cabinet.\n"
+         "$files = Get-ChildItem $Stage -Recurse -File |\n"
+         "    Where-Object { $_.Extension -ne '.cab' } |\n"
+         "    Sort-Object FullName\n"),
     ],
 }
 
@@ -277,6 +437,452 @@ TREES = [
 SCRIPT_INCLUDES = {"build.ps1", "fetch-librime.ps1", "make-icon.ps1"}
 
 ROOT_FILES = ["CMakeLists.txt", "VERSION", "THIRD_PARTY_NOTICES.md"]
+
+# ---------------------------------------------------------------------------
+# Security and integrity fixes found by the 2026-09-27 adversarial audit.
+#
+# Every one of these is inherited from 应物 -- the fork did not introduce them
+# -- and every one is in the installer, which runs elevated. They are kept
+# separate from the identity tables so that (a) it is obvious what was changed
+# for reasons other than rebranding, and (b) they can be lifted back into the
+# upstream tree, which is where they belong: 应物 ships the same code.
+# ---------------------------------------------------------------------------
+AUDIT_FIXES = {
+    # Reparse points are doors into other directories. Recursing through one
+    # let an unprivileged user aim this elevated recursive delete anywhere:
+    # %LOCALAPPDATA%\Zuxia is user-writable, so `mklink /J` there is all it
+    # takes, and the uninstaller's purge path deletes exactly that tree.
+    # Keys are the paths *upstream*: hmcommon.h is renamed to zxcommon.h on the
+    # way in, and every table here is keyed before that rename.
+    "installer/setup/hmcommon.h": [
+        ("      const std::wstring child = dir + L\"\\\\\" + name;\n"
+         "      if (find.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {\n"
+         "        DeleteTree(child);\n"
+         "      } else {\n",
+         "      const std::wstring child = dir + L\"\\\\\" + name;\n"
+         "      // A reparse point (junction or symlink) points somewhere else, and\n"
+         "      // this function runs elevated over trees the user can write to.\n"
+         "      // Recursing through one would let any user of this account aim an\n"
+         "      // administrator's recursive delete at an arbitrary directory --\n"
+         "      // %LOCALAPPDATA%\\Zuxia\\j -> C:\\Windows\\System32 would do it, and\n"
+         "      // junctions need no privilege. Remove the link itself, never the\n"
+         "      // directory it opens onto.\n"
+         "      if (find.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {\n"
+         "        SetFileAttributesW(child.c_str(), FILE_ATTRIBUTE_NORMAL);\n"
+         "        if (!DeleteFileW(child.c_str()) &&\n"
+         "            !RemoveDirectoryW(child.c_str())) {\n"
+         "          MoveFileExW(child.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);\n"
+         "        }\n"
+         "        continue;\n"
+         "      }\n"
+         "      if (find.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {\n"
+         "        DeleteTree(child);\n"
+         "      } else {\n"),
+        # A predictable file name in %TEMP% is a handle into an elevated
+        # process: %TEMP% comes from the user's own environment, and the write
+        # below uses CREATE_ALWAYS.
+        ("inline std::wstring TempDir() {",
+         "// A file name nobody else can predict, for the temporary files an\n"
+         "// elevated installer writes. %TEMP% is chosen by the installing user\n"
+         "// (HKCU\\Environment\\TMP), so a fixed name there is a handle into the\n"
+         "// elevated process: pre-create it as a hardlink and the write lands on\n"
+         "// an arbitrary file on the volume.\n"
+         "inline std::wstring UniqueTempName(const wchar_t* stem,\n"
+         "                                  const wchar_t* suffix) {\n"
+         "  GUID guid = {};\n"
+         "  if (SUCCEEDED(CoCreateGuid(&guid))) {\n"
+         "    wchar_t text[40] = {};\n"
+         "    if (StringFromGUID2(guid, text, ARRAYSIZE(text)) > 0) {\n"
+         "      // {........-....-....-....-............}: keep the hex, drop braces.\n"
+         "      return std::wstring(stem) + L\"-\" + std::wstring(text + 1, 36) + suffix;\n"
+         "    }\n"
+         "  }\n"
+         "  return std::wstring(stem) + L\"-\" + std::to_wstring(GetTickCount()) +\n"
+         "         L\"-\" + std::to_wstring(GetCurrentProcessId()) + suffix;\n"
+         "}\n"
+         "\n"
+         "// Two paths naming the same place, ignoring case and trailing separators.\n"
+         "inline bool SamePath(const std::wstring& a, const std::wstring& b) {\n"
+         "  std::wstring x = a;\n"
+         "  std::wstring y = b;\n"
+         "  while (!x.empty() && (x.back() == L'\\\\' || x.back() == L'/')) x.pop_back();\n"
+         "  while (!y.empty() && (y.back() == L'\\\\' || y.back() == L'/')) y.pop_back();\n"
+         "  return _wcsicmp(x.c_str(), y.c_str()) == 0;\n"
+         "}\n"
+         "\n"
+         "inline bool DirIsEmpty(const std::wstring& dir) {\n"
+         "  const std::wstring search = dir + L\"\\\\*\";\n"
+         "  WIN32_FIND_DATAW find = {};\n"
+         "  HANDLE handle = FindFirstFileW(search.c_str(), &find);\n"
+         "  if (handle == INVALID_HANDLE_VALUE) return true;\n"
+         "  bool empty = true;\n"
+         "  do {\n"
+         "    if (wcscmp(find.cFileName, L\".\") != 0 &&\n"
+         "        wcscmp(find.cFileName, L\"..\") != 0) {\n"
+         "      empty = false;\n"
+         "      break;\n"
+         "    }\n"
+         "  } while (FindNextFileW(handle, &find));\n"
+         "  FindClose(handle);\n"
+         "  return empty;\n"
+         "}\n"
+         "\n"
+         "// UTF-8, for the error log the silent install path writes.\n"
+         "inline std::string Narrow(const std::wstring& text) {\n"
+         "  if (text.empty()) return std::string();\n"
+         "  const int size = WideCharToMultiByte(CP_UTF8, 0, text.c_str(),\n"
+         "                                       static_cast<int>(text.size()),\n"
+         "                                       nullptr, 0, nullptr, nullptr);\n"
+         "  if (size <= 0) return std::string();\n"
+         "  std::string out(static_cast<size_t>(size), '\\0');\n"
+         "  WideCharToMultiByte(CP_UTF8, 0, text.c_str(),\n"
+         "                      static_cast<int>(text.size()), out.data(), size,\n"
+         "                      nullptr, nullptr);\n"
+         "  return out;\n"
+         "}\n"
+         "\n"
+         "inline std::wstring TempDir() {"),
+        ("#include <shlobj.h>\n#include <string>",
+         "#include <objbase.h>\n#include <shlobj.h>\n#include <string>"),
+        # The COM identity, shared by setup.cpp and uninst.cpp so the ARM64
+        # direct-registration path cannot drift from the text service itself.
+        # Kept in step with src/Globals.cpp by hand: the installer is a separate
+        # binary and cannot include the service's headers.
+        ('#define ZX_UNINST_EXE   L"ZuxiaUninstall.exe"',
+         '#define ZX_UNINST_EXE   L"ZuxiaUninstall.exe"\n'
+         '\n'
+         '// {A0073A11-FF52-4185-A655-D0C9171B7850} and\n'
+         '// {699B0EC1-3FDB-415D-89C0-0E55AA2EFFAF}, mirroring src/Globals.cpp.\n'
+         '#define ZX_CLSID   L"{A0073A11-FF52-4185-A655-D0C9171B7850}"\n'
+         '#define ZX_PROFILE L"{699B0EC1-3FDB-415D-89C0-0E55AA2EFFAF}"'),
+    ],
+    # The uninstaller used to copy itself into %TEMP% (a directory the user
+    # chooses) under a fixed name and then execute that copy with an
+    # administrator token. Nothing about that was necessary: the in-place path
+    # already exists and is what /run mode has always used.
+    "installer/setup/uninst.cpp": [
+        # Mirror of the ARM64 registration: regsvr32 cannot unregister an x64
+        # DLL from an ARM64 process, so the keys the installer wrote directly
+        # have to be removed directly too.
+        ("  zx::RemoveKey(ZX_ARP_KEY);\n",
+         "  // On ARM64 the x64 CLSID and the TSF language profile were published\n"
+         "  // by the installer directly (see setup.cpp): no 64-bit regsvr32 exists\n"
+         "  // there that can unload an x64 DLL, so remove the keys instead. Both\n"
+         "  // live in the 64-bit view / the shared CTF store, which is what\n"
+         "  // zx::NativeView() selects.\n"
+         "  if (zx::IsArm64OS()) {\n"
+         "    zx::RemoveKey(L\"SOFTWARE\\\\Classes\\\\CLSID\\\\\" ZX_CLSID);\n"
+         "    zx::RemoveKey(L\"SOFTWARE\\\\Microsoft\\\\CTF\\\\TIP\\\\\" ZX_CLSID);\n"
+         "  }\n"
+         "\n"
+         "  zx::RemoveKey(ZX_ARP_KEY);\n"),
+        ("// Copies this binary out of the install tree and hands the work to the copy.\n"
+         "int Relaunch(const std::wstring& root) {\n"
+         "  const std::wstring temp = zx::TempDir() + L\"zuxia-uninstall-run.exe\";\n"
+         "  DeleteFileW(temp.c_str());\n"
+         "  if (!CopyFileW(zx::SelfPath().c_str(), temp.c_str(), FALSE)) {\n"
+         "    // Falling back to an in-place uninstall still works; only the uninstaller\n"
+         "    // itself will be left behind for the reboot sweep.\n"
+         "    return RunUninstall(root);\n"
+         "  }\n"
+         "\n"
+         "  std::wstring args = L\"/run \\\"\" + root + L\"\\\"\";\n"
+         "  if (g_silent) args += L\" /silent\";\n"
+         "  if (g_purge) args += L\" /purge\";\n"
+         "\n"
+         "  SHELLEXECUTEINFOW info = {};\n"
+         "  info.cbSize = sizeof(info);\n"
+         "  info.fMask = SEE_MASK_NOCLOSEPROCESS;\n"
+         "  info.lpVerb = L\"open\";\n"
+         "  info.lpFile = temp.c_str();\n"
+         "  info.lpParameters = args.c_str();\n"
+         "  info.nShow = SW_SHOWNORMAL;\n"
+         "  if (!ShellExecuteExW(&info)) {\n"
+         "    DeleteFileW(temp.c_str());\n"
+         "    return RunUninstall(root);\n"
+         "  }\n"
+         "  if (info.hProcess) CloseHandle(info.hProcess);\n"
+         "  return 0;\n"
+         "}\n",
+         "// Uninstalls in place.\n"
+         "//\n"
+         "// This binary used to copy itself into %TEMP% and run the copy, so that the\n"
+         "// install directory could be removed whole. But %TEMP% is chosen by the\n"
+         "// installing user (HKCU\\Environment\\TMP, repointable by any process of that\n"
+         "// account), the copy was made under a fixed name, and the file was written\n"
+         "// before it was executed -- an elevated process running a file an\n"
+         "// unprivileged user can replace. DeleteTree already parks a running\n"
+         "// executable as *.old and reaps it at the next boot, so the copy bought\n"
+         "// nothing and cost that. This is the path /run mode has always used.\n"
+         "int UninstallInPlace(const std::wstring& root) { return RunUninstall(root); }\n"),
+        ("  return Relaunch(root);\n}\n",
+         "  return UninstallInPlace(root);\n}\n"),
+    ],
+    # A fixed name in %TEMP% that the unprivileged user can pre-create -- as a
+    # hardlink to any file on the volume -- and that this elevated process then
+    # opens with CREATE_ALWAYS.
+    "installer/setup/setup.cpp": [
+        ("  const std::wstring cab = zx::TempDir() + L\"zuxia-payload.cab\";\n",
+         "  // An unpredictable name: a fixed one in %TEMP% can be pre-created as a\n"
+         "  // hardlink to any file on the volume, and this process is elevated.\n"
+         "  const std::wstring cab =\n"
+         "      zx::TempDir() + zx::UniqueTempName(L\"zuxia-payload\", L\".cab\");\n"),
+        ("  HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,\n"
+         "                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);\n",
+         "  // CREATE_NEW: refuse to adopt a file that is already there.\n"
+         "  HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,\n"
+         "                            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);\n"),
+        # Reporting success for an install that copied nothing is worse than
+        # reporting failure: a concurrent second instance empties the shared
+        # staging directory, and this returned true for the empty tree.
+        ("  HANDLE handle = FindFirstFileW(search.c_str(), &find);\n"
+         "  if (handle == INVALID_HANDLE_VALUE) return true;\n",
+         "  HANDLE handle = FindFirstFileW(search.c_str(), &find);\n"
+         "  if (handle == INVALID_HANDLE_VALUE) {\n"
+         "    // Nothing to promote. Saying true here once reported 安装完成 for an\n"
+         "    // install that moved no files at all.\n"
+         "    *error = L\"暂存目录为空：\" + staging;\n"
+         "    return false;\n"
+         "  }\n"),
+        # The x64 registration step is fatal only where a 64-bit regsvr32 can
+        # actually load the DLL. On ARM64 none can, so it must not abort the
+        # whole install -- and the keys can be written directly instead.
+        ("  if (zx::Is64BitOS() &&\n"
+         "      zx::RegisterDll(zx::Regsvr32For64(), x64, false) != 0) {\n"
+         "    *error = L\"注册 64 位输入法失败。\";\n"
+         "    UnregisterAt(root);\n"
+         "    return false;\n"
+         "  }\n",
+         "  if (zx::Is64BitOS() && zx::IsArm64OS()) {\n"
+         "    // No 64-bit regsvr32 reachable from here can load an x64 DLL, so this\n"
+         "    // is not a failure of the install: publish the CLSID and the profile\n"
+         "    // directly, which is what the hosts that *can* load it look up.\n"
+         "    if (!PublishArm64Registration(x64)) {\n"
+         "      *error = L\"注册 64 位输入法失败。\";\n"
+         "      UnregisterAt(root);\n"
+         "      return false;\n"
+         "    }\n"
+         "  } else if (zx::Is64BitOS() &&\n"
+         "             zx::RegisterDll(zx::Regsvr32For64(), x64, false) != 0) {\n"
+         "    *error = L\"注册 64 位输入法失败。\";\n"
+         "    UnregisterAt(root);\n"
+         "    return false;\n"
+         "  }\n"),
+        # The ARM64 half of registration, placed next to DoInstall -- the only
+        # caller -- so this fork's diff stays local. The msctf include is here
+        # for the same reason: nothing else in the file needs it.
+        ("bool DoInstall(std::wstring* error) {\n",
+         "// ------------------------------------------------- ARM64 注册 --\n"
+         "//\n"
+         "// On ARM64 the only 64-bit regsvr32 a 32-bit process can reach is the\n"
+         "// ARM64 one, and an ARM64 process cannot load an x64 DLL -- so\n"
+         "// DllRegisterServer never runs for the x64 text service and neither its\n"
+         "// CLSID nor its TSF language profile would be published. Both can be\n"
+         "// done from here instead:\n"
+         "//\n"
+         "//   * the 64-bit registry view is shared by ARM64, ARM64EC and\n"
+         "//     x64-emulated processes (only the 32-bit x86 view is redirected),\n"
+         "//     so a CLSID written with KEY_WOW64_64KEY is exactly what an\n"
+         "//     x64-emulated host resolves;\n"
+         "//   * the TSF profile store HKLM\\SOFTWARE\\Microsoft\\CTF\\TIP is Shared,\n"
+         "//     so one registration covers every architecture.\n"
+         "//\n"
+         "// ARM64-native hosts still cannot use this product: a process can only\n"
+         "// load a DLL of its own architecture, and the x64 text service in the\n"
+         "// 64-bit view is not an ARM64X image. See docs/审计发现.md.\n"
+         "#include <msctf.h>\n"
+         "\n"
+         "bool PublishComRegistration(const std::wstring& module) {\n"
+         "  const std::wstring path =\n"
+         "      std::wstring(L\"SOFTWARE\\\\Classes\\\\CLSID\\\\\") + ZX_CLSID;\n"
+         "  HKEY key = nullptr;\n"
+         "  if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, path.c_str(), 0, nullptr,\n"
+         "                      REG_OPTION_NON_VOLATILE, KEY_WRITE | KEY_WOW64_64KEY,\n"
+         "                      nullptr, &key, nullptr) != ERROR_SUCCESS) {\n"
+         "    return false;\n"
+         "  }\n"
+         "  SetString(key, nullptr, ZX_PRODUCT);\n"
+         "  HKEY inproc = nullptr;\n"
+         "  const bool ok =\n"
+         "      RegCreateKeyExW(key, L\"InProcServer32\", 0, nullptr,\n"
+         "                      REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &inproc,\n"
+         "                      nullptr) == ERROR_SUCCESS;\n"
+         "  if (ok) {\n"
+         "    SetString(inproc, nullptr, module);\n"
+         "    SetString(inproc, L\"ThreadingModel\", L\"Apartment\");\n"
+         "    RegCloseKey(inproc);\n"
+         "  }\n"
+         "  RegCloseKey(key);\n"
+         "  return ok;\n"
+         "}\n"
+         "\n"
+         "bool PublishLanguageProfile(const std::wstring& module) {\n"
+         "  const HRESULT started = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);\n"
+         "  ITfInputProcessorProfiles* profiles = nullptr;\n"
+         "  bool ok = false;\n"
+         "  if (SUCCEEDED(CoCreateInstance(\n"
+         "          CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER,\n"
+         "          IID_ITfInputProcessorProfiles,\n"
+         "          reinterpret_cast<void**>(&profiles))) &&\n"
+         "      profiles) {\n"
+         "    CLSID clsid = {};\n"
+         "    GUID profile = {};\n"
+         "    if (SUCCEEDED(CLSIDFromString(ZX_CLSID, &clsid)) &&\n"
+         "        SUCCEEDED(CLSIDFromString(ZX_PROFILE, &profile))) {\n"
+         "      const LANGID langid = 0x0804;  // zh-CN, matching src/Globals.h\n"
+         "      profiles->Register(clsid);\n"
+         "      profiles->RemoveLanguageProfile(clsid, langid, profile);\n"
+         "      if (SUCCEEDED(profiles->AddLanguageProfile(\n"
+         "              clsid, langid, profile, ZX_PRODUCT,\n"
+         "              static_cast<ULONG>(wcslen(ZX_PRODUCT)), module.c_str(),\n"
+         "              static_cast<ULONG>(module.size()), 0))) {\n"
+         "        profiles->EnableLanguageProfile(clsid, langid, profile, TRUE);\n"
+         "        ok = true;\n"
+         "      }\n"
+         "    }\n"
+         "    profiles->Release();\n"
+         "  }\n"
+         "  if (SUCCEEDED(started)) CoUninitialize();\n"
+         "  return ok;\n"
+         "}\n"
+         "\n"
+         "bool PublishArm64Registration(const std::wstring& x64_module) {\n"
+         "  return PublishComRegistration(x64_module) &&\n"
+         "         PublishLanguageProfile(x64_module);\n"
+         "}\n"
+         "\n"
+         "bool DoInstall(std::wstring* error) {\n"),
+        # UnregisterAt is also the failure path, so it has to undo the direct
+        # registration too.
+        ("void UnregisterAt(const std::wstring& root) {\n"
+         "  const std::wstring x86 = root + L\"\\\\x86\\\\\" ZX_TSF_DLL;\n"
+         "  const std::wstring x64 = root + L\"\\\\x64\\\\\" ZX_TSF_DLL;\n"
+         "  if (zx::FileExists(x86)) zx::RegisterDll(zx::Regsvr32For32(), x86, true);\n"
+         "  if (zx::FileExists(x64)) zx::RegisterDll(zx::Regsvr32For64(), x64, true);\n"
+         "}\n",
+         "void UnregisterAt(const std::wstring& root) {\n"
+         "  const std::wstring x86 = root + L\"\\\\x86\\\\\" ZX_TSF_DLL;\n"
+         "  const std::wstring x64 = root + L\"\\\\x64\\\\\" ZX_TSF_DLL;\n"
+         "  if (zx::FileExists(x86)) zx::RegisterDll(zx::Regsvr32For32(), x86, true);\n"
+         "  if (zx::FileExists(x64)) zx::RegisterDll(zx::Regsvr32For64(), x64, true);\n"
+         "  // On ARM64 the keys were written directly (see PublishComRegistration),\n"
+         "  // and no regsvr32 there can undo them.\n"
+         "  if (zx::IsArm64OS()) {\n"
+         "    zx::RemoveKey(L\"SOFTWARE\\\\Classes\\\\CLSID\\\\\" ZX_CLSID);\n"
+         "    zx::RemoveKey(L\"SOFTWARE\\\\Microsoft\\\\CTF\\\\TIP\\\\\" ZX_CLSID);\n"
+         "  }\n"
+         "}\n"),
+        # Record what an ARM64 install actually covers, so support and
+        # scripts/verify-install.ps1 can tell "emulated hosts only" from "broken".
+        ("  SetString(key, L\"Version\", ZX_VERSION);\n",
+         "  SetString(key, L\"Version\", ZX_VERSION);\n"
+         "  // The scope an ARM64 install actually has. Written so that support and\n"
+         "  // scripts\\verify-install.ps1 can distinguish \"works in emulated hosts\n"
+         "  // only\" from \"registration failed\".\n"
+         "  if (zx::IsArm64OS()) {\n"
+         "    SetString(key, L\"HostScope\", L\"arm64-emulated-hosts-only\");\n"
+         "  }\n"),
+        # The completion text has to state the real scope, in the terms the
+        # architecture actually imposes.
+        ("    if (zx::IsArm64OS()) {\n"
+         "      message +=\n"
+         "          L\"\\n\\n注意：本机为 ARM64 Windows，\"\n"
+         "          L\"本版本只含 x64/x86 文本服务，\"\n"
+         "          L\"仅在模拟运行的应用中可用。\";\n"
+         "    }\n",
+         "    if (zx::IsArm64OS()) {\n"
+         "      message +=\n"
+         "          L\"\\n\\n注意：本机是 Windows on ARM（ARM64）。\"\n"
+         "          L\"文本服务只有 x64 与 x86 版本，因此只在\"\n"
+         "          L\"以 x86 / x64 / Arm64EC 模式运行的应用里\"\n"
+         "          L\"可用；ARM64 原生应用（Edge ARM64、\"\n"
+         "          L\"记事本、资源管理器等）里无法输入。\\n\"\n"
+         "          L\"原因：TSF 把输入法 DLL 载入宿主进程，\"\n"
+         "          L\"而进程只能载入与本进程同架构的 DLL。\";\n"
+         "    }\n"),
+        # This payload shares file names with the sibling product (rime.dll,
+        # data\default.yaml) and PromoteTree overwrites in place, so an install
+        # root aimed at the sibling silently corrupts it.
+        ("    } else if (arg.size() > 5 && _wcsnicmp(arg.c_str(), L\"/dir=\", 5) == 0) {\n"
+         "      g_install_root = arg.substr(5);\n"
+         "    }\n"
+         "  }\n"
+         "  if (argv) LocalFree(argv);\n",
+         "    } else if (arg.size() > 5 && _wcsnicmp(arg.c_str(), L\"/dir=\", 5) == 0) {\n"
+         "      g_install_root = arg.substr(5);\n"
+         "    }\n"
+         "  }\n"
+         "  if (argv) LocalFree(argv);\n"
+         "\n"
+         "  // Refuse a target that is neither empty nor already ours. The payload\n"
+         "  // shares file names with the sibling product (x86|rime.dll,\n"
+         "  // data\\default.yaml) and PromoteTree overwrites in place, so pointing\n"
+         "  // /dir= at the sibling's own directory would quietly corrupt it.\n"
+         "  // Refusing costs a custom install into a non-empty directory, which was\n"
+         "  // never a supported arrangement anyway.\n"
+         "  if (!zx::SamePath(g_install_root, zx::DefaultInstallRoot()) &&\n"
+         "      zx::DirExists(g_install_root) &&\n"
+         "      !zx::FileExists(g_install_root + L\"\\\\\" ZX_UNINST_EXE) &&\n"
+         "      !zx::DirIsEmpty(g_install_root)) {\n"
+         "    MessageBoxW(nullptr,\n"
+         "                (L\"安装目录非空，且不是本输入法的目录，已停止：\\n\" +\n"
+         "                 g_install_root).c_str(),\n"
+         "                ZX_PRODUCT, MB_OK | MB_ICONERROR);\n"
+         "    return 1;\n"
+         "  }\n"),
+        # A silent install that pops a modal message box hangs the deployment
+        # that was waiting for it: there is no one to click OK in session 0.
+        ("  if (g_silent) {\n"
+         "    std::wstring error;\n"
+         "    const bool ok = DoInstall(&error);\n"
+         "    if (!ok) {\n"
+         "      MessageBoxW(nullptr, error.c_str(), ZX_PRODUCT, MB_OK | MB_ICONERROR);\n"
+         "    }\n"
+         "    return ok ? 0 : 1;\n"
+         "  }\n",
+         "  if (g_silent) {\n"
+         "    // No UI, ever: a modal box here blocks an unattended deployment that\n"
+         "    // has nobody to dismiss it. The failure goes to a log beside the\n"
+         "    // installer and to the exit code, which is all a deployment tool reads.\n"
+         "    std::wstring error;\n"
+         "    const bool ok = DoInstall(&error);\n"
+         "    if (!ok) {\n"
+         "      const std::wstring log =\n"
+         "          zx::TempDir() + zx::UniqueTempName(L\"zuxia-setup-error\", L\".log\");\n"
+         "      HANDLE file = CreateFileW(log.c_str(), GENERIC_WRITE, 0, nullptr,\n"
+         "                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);\n"
+         "      if (file != INVALID_HANDLE_VALUE) {\n"
+         "        const std::string utf8 = zx::Narrow(error);\n"
+         "        DWORD written = 0;\n"
+         "        WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()),\n"
+         "                  &written, nullptr);\n"
+         "        CloseHandle(file);\n"
+         "      }\n"
+         "      OutputDebugStringW(error.c_str());\n"
+         "    }\n"
+         "    return ok ? 0 : 1;\n"
+         "  }\n"
+         "\n"
+         "  // One installer at a time. Two concurrent runs share the staging\n"
+         "  // directory and one empties the other's verified tree mid-install.\n"
+         "  HANDLE single = CreateMutexW(nullptr, FALSE, L\"Global\\\\ZuxiaSetup\");\n"
+         "  if (single && GetLastError() == ERROR_ALREADY_EXISTS) {\n"
+         "    MessageBoxW(nullptr, L\"安装程序已在运行。\", ZX_PRODUCT,\n"
+         "                MB_OK | MB_ICONINFORMATION);\n"
+         "    CloseHandle(single);\n"
+         "    return 1;\n"
+         "  }\n"),
+    ],
+    # SetEndOfFile needs write access; the handle was opened FILE_APPEND_DATA
+    # only, so the 256 KB cap silently never applied and the log grew forever.
+    "src/Diagnostics.cpp": [
+        ("  HANDLE file = CreateFileW(g_path.c_str(), FILE_APPEND_DATA,\n",
+         "  // FILE_WRITE_DATA as well: TruncateIfLarge calls SetEndOfFile on this\n"
+         "  // handle, which fails without it, so the size cap above never worked.\n"
+         "  HANDLE file = CreateFileW(g_path.c_str(),\n"
+         "                            FILE_APPEND_DATA | FILE_WRITE_DATA,\n"),
+    ],
+}
 
 # A fork that still says Yingwu or hengma anywhere is a fork that will confuse
 # the next person. Refuse to write one.
@@ -332,6 +938,7 @@ def port_file(source: pathlib.Path, target: pathlib.Path, key: str,
     text = replace_all(text, IDENTITY, key, changed, strict=False)
     text = replace_all(text, MECHANICAL, key, changed, strict=False)
     text = replace_all(text, EXTRA_PAIRS.get(key, []), key, changed, strict=True)
+    text = replace_all(text, AUDIT_FIXES.get(key, []), key, changed, strict=True)
 
     leftovers = [token for token in FORBIDDEN if token in text]
     for token in leftovers:

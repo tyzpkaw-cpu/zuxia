@@ -63,8 +63,9 @@ bool WriteResourceToFile(int resource_id, const std::wstring& path) {
   const DWORD size = SizeofResource(g_instance, found);
   if (!data || size == 0) return false;
 
+  // CREATE_NEW: refuse to adopt a file that is already there.
   HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
-                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) return false;
   DWORD written = 0;
   const bool ok =
@@ -81,6 +82,12 @@ void UnregisterAt(const std::wstring& root) {
   const std::wstring x64 = root + L"\\x64\\" ZX_TSF_DLL;
   if (zx::FileExists(x86)) zx::RegisterDll(zx::Regsvr32For32(), x86, true);
   if (zx::FileExists(x64)) zx::RegisterDll(zx::Regsvr32For64(), x64, true);
+  // On ARM64 the keys were written directly (see PublishComRegistration),
+  // and no regsvr32 there can undo them.
+  if (zx::IsArm64OS()) {
+    zx::RemoveKey(L"SOFTWARE\\Classes\\CLSID\\" ZX_CLSID);
+    zx::RemoveKey(L"SOFTWARE\\Microsoft\\CTF\\TIP\\" ZX_CLSID);
+  }
 }
 
 // Moves the verified staging tree over the live tree, one file at a time so a
@@ -90,7 +97,12 @@ bool PromoteTree(const std::wstring& staging, const std::wstring& target,
   const std::wstring search = staging + L"\\*";
   WIN32_FIND_DATAW find = {};
   HANDLE handle = FindFirstFileW(search.c_str(), &find);
-  if (handle == INVALID_HANDLE_VALUE) return true;
+  if (handle == INVALID_HANDLE_VALUE) {
+    // Nothing to promote. Saying true here once reported 安装完成 for an
+    // install that moved no files at all.
+    *error = L"暂存目录为空：" + staging;
+    return false;
+  }
   bool ok = true;
   do {
     const std::wstring name = find.cFileName;
@@ -138,6 +150,12 @@ bool WriteRegistry(const std::wstring& root, std::wstring* error) {
   }
   SetString(key, L"InstallPath", root);
   SetString(key, L"Version", ZX_VERSION);
+  // The scope an ARM64 install actually has. Written so that support and
+  // scripts\verify-install.ps1 can distinguish "works in emulated hosts
+  // only" from "registration failed".
+  if (zx::IsArm64OS()) {
+    SetString(key, L"HostScope", L"arm64-emulated-hosts-only");
+  }
   RegCloseKey(key);
 
   if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, ZX_ARP_KEY, 0, nullptr, 0,
@@ -166,10 +184,92 @@ bool WriteRegistry(const std::wstring& root, std::wstring* error) {
   return true;
 }
 
+// ------------------------------------------------- ARM64 注册 --
+//
+// On ARM64 the only 64-bit regsvr32 a 32-bit process can reach is the
+// ARM64 one, and an ARM64 process cannot load an x64 DLL -- so
+// DllRegisterServer never runs for the x64 text service and neither its
+// CLSID nor its TSF language profile would be published. Both can be
+// done from here instead:
+//
+//   * the 64-bit registry view is shared by ARM64, ARM64EC and
+//     x64-emulated processes (only the 32-bit x86 view is redirected),
+//     so a CLSID written with KEY_WOW64_64KEY is exactly what an
+//     x64-emulated host resolves;
+//   * the TSF profile store HKLM\SOFTWARE\Microsoft\CTF\TIP is Shared,
+//     so one registration covers every architecture.
+//
+// ARM64-native hosts still cannot use this product: a process can only
+// load a DLL of its own architecture, and the x64 text service in the
+// 64-bit view is not an ARM64X image. See docs/审计发现.md.
+#include <msctf.h>
+
+bool PublishComRegistration(const std::wstring& module) {
+  const std::wstring path =
+      std::wstring(L"SOFTWARE\\Classes\\CLSID\\") + ZX_CLSID;
+  HKEY key = nullptr;
+  if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, path.c_str(), 0, nullptr,
+                      REG_OPTION_NON_VOLATILE, KEY_WRITE | KEY_WOW64_64KEY,
+                      nullptr, &key, nullptr) != ERROR_SUCCESS) {
+    return false;
+  }
+  SetString(key, nullptr, ZX_PRODUCT);
+  HKEY inproc = nullptr;
+  const bool ok =
+      RegCreateKeyExW(key, L"InProcServer32", 0, nullptr,
+                      REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &inproc,
+                      nullptr) == ERROR_SUCCESS;
+  if (ok) {
+    SetString(inproc, nullptr, module);
+    SetString(inproc, L"ThreadingModel", L"Apartment");
+    RegCloseKey(inproc);
+  }
+  RegCloseKey(key);
+  return ok;
+}
+
+bool PublishLanguageProfile(const std::wstring& module) {
+  const HRESULT started = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  ITfInputProcessorProfiles* profiles = nullptr;
+  bool ok = false;
+  if (SUCCEEDED(CoCreateInstance(
+          CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER,
+          IID_ITfInputProcessorProfiles,
+          reinterpret_cast<void**>(&profiles))) &&
+      profiles) {
+    CLSID clsid = {};
+    GUID profile = {};
+    if (SUCCEEDED(CLSIDFromString(ZX_CLSID, &clsid)) &&
+        SUCCEEDED(CLSIDFromString(ZX_PROFILE, &profile))) {
+      const LANGID langid = 0x0804;  // zh-CN, matching src/Globals.h
+      profiles->Register(clsid);
+      profiles->RemoveLanguageProfile(clsid, langid, profile);
+      if (SUCCEEDED(profiles->AddLanguageProfile(
+              clsid, langid, profile, ZX_PRODUCT,
+              static_cast<ULONG>(wcslen(ZX_PRODUCT)), module.c_str(),
+              static_cast<ULONG>(module.size()), 0))) {
+        profiles->EnableLanguageProfile(clsid, langid, profile, TRUE);
+        ok = true;
+      }
+    }
+    profiles->Release();
+  }
+  if (SUCCEEDED(started)) CoUninitialize();
+  return ok;
+}
+
+bool PublishArm64Registration(const std::wstring& x64_module) {
+  return PublishComRegistration(x64_module) &&
+         PublishLanguageProfile(x64_module);
+}
+
 bool DoInstall(std::wstring* error) {
   const std::wstring root = g_install_root;
   const std::wstring staging = root + L".new";
-  const std::wstring cab = zx::TempDir() + L"zuxia-payload.cab";
+  // An unpredictable name: a fixed one in %TEMP% can be pre-created as a
+  // hardlink to any file on the volume, and this process is elevated.
+  const std::wstring cab =
+      zx::TempDir() + zx::UniqueTempName(L"zuxia-payload", L".cab");
 
   Status(L"正在准备安装文件…");
   Progress(2);
@@ -269,8 +369,17 @@ bool DoInstall(std::wstring* error) {
     UnregisterAt(root);
     return false;
   }
-  if (zx::Is64BitOS() &&
-      zx::RegisterDll(zx::Regsvr32For64(), x64, false) != 0) {
+  if (zx::Is64BitOS() && zx::IsArm64OS()) {
+    // No 64-bit regsvr32 reachable from here can load an x64 DLL, so this
+    // is not a failure of the install: publish the CLSID and the profile
+    // directly, which is what the hosts that *can* load it look up.
+    if (!PublishArm64Registration(x64)) {
+      *error = L"注册 64 位输入法失败。";
+      UnregisterAt(root);
+      return false;
+    }
+  } else if (zx::Is64BitOS() &&
+             zx::RegisterDll(zx::Regsvr32For64(), x64, false) != 0) {
     *error = L"注册 64 位输入法失败。";
     UnregisterAt(root);
     return false;
@@ -297,9 +406,13 @@ DWORD WINAPI InstallThread(LPVOID) {
         L"请稍候几秒。";
     if (zx::IsArm64OS()) {
       message +=
-          L"\n\n注意：本机为 ARM64 Windows，"
-          L"本版本只含 x64/x86 文本服务，"
-          L"仅在模拟运行的应用中可用。";
+          L"\n\n注意：本机是 Windows on ARM（ARM64）。"
+          L"文本服务只有 x64 与 x86 版本，因此只在"
+          L"以 x86 / x64 / Arm64EC 模式运行的应用里"
+          L"可用；ARM64 原生应用（Edge ARM64、"
+          L"记事本、资源管理器等）里无法输入。\n"
+          L"原因：TSF 把输入法 DLL 载入宿主进程，"
+          L"而进程只能载入与本进程同架构的 DLL。";
     }
     Post(kMsgDone, 1, message);
   } else {
@@ -448,6 +561,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   }
   if (argv) LocalFree(argv);
 
+  // Refuse a target that is neither empty nor already ours. The payload
+  // shares file names with the sibling product (x86|rime.dll,
+  // data\default.yaml) and PromoteTree overwrites in place, so pointing
+  // /dir= at the sibling's own directory would quietly corrupt it.
+  // Refusing costs a custom install into a non-empty directory, which was
+  // never a supported arrangement anyway.
+  if (!zx::SamePath(g_install_root, zx::DefaultInstallRoot()) &&
+      zx::DirExists(g_install_root) &&
+      !zx::FileExists(g_install_root + L"\\" ZX_UNINST_EXE) &&
+      !zx::DirIsEmpty(g_install_root)) {
+    MessageBoxW(nullptr,
+                (L"安装目录非空，且不是本输入法的目录，已停止：\n" +
+                 g_install_root).c_str(),
+                ZX_PRODUCT, MB_OK | MB_ICONERROR);
+    return 1;
+  }
+
   if (!zx::IsElevated()) {
     MessageBoxW(nullptr,
                 L"安装程序需要管理员权限。",
@@ -459,12 +589,36 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   InitCommonControlsEx(&controls);
 
   if (g_silent) {
+    // No UI, ever: a modal box here blocks an unattended deployment that
+    // has nobody to dismiss it. The failure goes to a log beside the
+    // installer and to the exit code, which is all a deployment tool reads.
     std::wstring error;
     const bool ok = DoInstall(&error);
     if (!ok) {
-      MessageBoxW(nullptr, error.c_str(), ZX_PRODUCT, MB_OK | MB_ICONERROR);
+      const std::wstring log =
+          zx::TempDir() + zx::UniqueTempName(L"zuxia-setup-error", L".log");
+      HANDLE file = CreateFileW(log.c_str(), GENERIC_WRITE, 0, nullptr,
+                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (file != INVALID_HANDLE_VALUE) {
+        const std::string utf8 = zx::Narrow(error);
+        DWORD written = 0;
+        WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()),
+                  &written, nullptr);
+        CloseHandle(file);
+      }
+      OutputDebugStringW(error.c_str());
     }
     return ok ? 0 : 1;
+  }
+
+  // One installer at a time. Two concurrent runs share the staging
+  // directory and one empties the other's verified tree mid-install.
+  HANDLE single = CreateMutexW(nullptr, FALSE, L"Global\\ZuxiaSetup");
+  if (single && GetLastError() == ERROR_ALREADY_EXISTS) {
+    MessageBoxW(nullptr, L"安装程序已在运行。", ZX_PRODUCT,
+                MB_OK | MB_ICONINFORMATION);
+    CloseHandle(single);
+    return 1;
   }
 
   DialogBoxParamW(instance, MAKEINTRESOURCEW(IDD_MAIN), nullptr, DialogProc, 0);

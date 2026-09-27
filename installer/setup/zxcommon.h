@@ -9,6 +9,7 @@
 #include <windows.h>
 #include <aclapi.h>
 #include <sddl.h>
+#include <objbase.h>
 #include <shlobj.h>
 #include <string>
 #include <vector>
@@ -21,6 +22,11 @@
 #define ZX_ARP_KEY      L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ZuxiaIME"
 #define ZX_PRODUCT_KEY  L"SOFTWARE\\Zuxia"
 #define ZX_UNINST_EXE   L"ZuxiaUninstall.exe"
+
+// {A0073A11-FF52-4185-A655-D0C9171B7850} and
+// {699B0EC1-3FDB-415D-89C0-0E55AA2EFFAF}, mirroring src/Globals.cpp.
+#define ZX_CLSID   L"{A0073A11-FF52-4185-A655-D0C9171B7850}"
+#define ZX_PROFILE L"{699B0EC1-3FDB-415D-89C0-0E55AA2EFFAF}"
 
 namespace zx {
 
@@ -204,6 +210,21 @@ inline bool DeleteTree(const std::wstring& dir) {
       const std::wstring name = find.cFileName;
       if (name == L"." || name == L"..") continue;
       const std::wstring child = dir + L"\\" + name;
+      // A reparse point (junction or symlink) points somewhere else, and
+      // this function runs elevated over trees the user can write to.
+      // Recursing through one would let any user of this account aim an
+      // administrator's recursive delete at an arbitrary directory --
+      // %LOCALAPPDATA%\Zuxia\j -> C:\Windows\System32 would do it, and
+      // junctions need no privilege. Remove the link itself, never the
+      // directory it opens onto.
+      if (find.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+        SetFileAttributesW(child.c_str(), FILE_ATTRIBUTE_NORMAL);
+        if (!DeleteFileW(child.c_str()) &&
+            !RemoveDirectoryW(child.c_str())) {
+          MoveFileExW(child.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+        }
+        continue;
+      }
       if (find.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
         DeleteTree(child);
       } else {
@@ -294,6 +315,65 @@ inline std::wstring SelfPath() {
   wchar_t buffer[MAX_PATH] = {};
   GetModuleFileNameW(nullptr, buffer, MAX_PATH);
   return std::wstring(buffer);
+}
+
+// A file name nobody else can predict, for the temporary files an
+// elevated installer writes. %TEMP% is chosen by the installing user
+// (HKCU\Environment\TMP), so a fixed name there is a handle into the
+// elevated process: pre-create it as a hardlink and the write lands on
+// an arbitrary file on the volume.
+inline std::wstring UniqueTempName(const wchar_t* stem,
+                                  const wchar_t* suffix) {
+  GUID guid = {};
+  if (SUCCEEDED(CoCreateGuid(&guid))) {
+    wchar_t text[40] = {};
+    if (StringFromGUID2(guid, text, ARRAYSIZE(text)) > 0) {
+      // {........-....-....-....-............}: keep the hex, drop braces.
+      return std::wstring(stem) + L"-" + std::wstring(text + 1, 36) + suffix;
+    }
+  }
+  return std::wstring(stem) + L"-" + std::to_wstring(GetTickCount()) +
+         L"-" + std::to_wstring(GetCurrentProcessId()) + suffix;
+}
+
+// Two paths naming the same place, ignoring case and trailing separators.
+inline bool SamePath(const std::wstring& a, const std::wstring& b) {
+  std::wstring x = a;
+  std::wstring y = b;
+  while (!x.empty() && (x.back() == L'\\' || x.back() == L'/')) x.pop_back();
+  while (!y.empty() && (y.back() == L'\\' || y.back() == L'/')) y.pop_back();
+  return _wcsicmp(x.c_str(), y.c_str()) == 0;
+}
+
+inline bool DirIsEmpty(const std::wstring& dir) {
+  const std::wstring search = dir + L"\\*";
+  WIN32_FIND_DATAW find = {};
+  HANDLE handle = FindFirstFileW(search.c_str(), &find);
+  if (handle == INVALID_HANDLE_VALUE) return true;
+  bool empty = true;
+  do {
+    if (wcscmp(find.cFileName, L".") != 0 &&
+        wcscmp(find.cFileName, L"..") != 0) {
+      empty = false;
+      break;
+    }
+  } while (FindNextFileW(handle, &find));
+  FindClose(handle);
+  return empty;
+}
+
+// UTF-8, for the error log the silent install path writes.
+inline std::string Narrow(const std::wstring& text) {
+  if (text.empty()) return std::string();
+  const int size = WideCharToMultiByte(CP_UTF8, 0, text.c_str(),
+                                       static_cast<int>(text.size()),
+                                       nullptr, 0, nullptr, nullptr);
+  if (size <= 0) return std::string();
+  std::string out(static_cast<size_t>(size), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, text.c_str(),
+                      static_cast<int>(text.size()), out.data(), size,
+                      nullptr, nullptr);
+  return out;
 }
 
 inline std::wstring TempDir() {
