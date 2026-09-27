@@ -1,0 +1,23 @@
+#include <windows.h>
+#include "resource.h"
+
+IDI_APP ICON "app.ico"
+
+IDR_PAYLOAD     RCDATA "payload.cab"
+IDR_UNINSTALLER RCDATA "ZuxiaUninstall.exe"
+
+IDD_MAIN DIALOGEX 0, 0, 300, 176
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "应物音形足下输入法 安装程序"
+FONT 9, "Microsoft YaHei UI", 400, 0, 0x86
+BEGIN
+    LTEXT           "应物音形足下输入法 0.1.0", IDC_HEAD, 14, 10, 272, 14
+    LTEXT           "", IDC_DESC, 14, 28, 272, 44
+    LTEXT           "安装位置", IDC_PATHLABEL, 14, 78, 272, 9
+    LTEXT           "", IDC_PATH, 14, 89, 272, 14, SS_PATHELLIPSIS | SS_CENTERIMAGE | WS_BORDER
+    CONTROL         "", IDC_PROGRESS, "msctls_progress32", WS_BORDER, 14, 111, 272, 11
+    LTEXT           "", IDC_STATUS, 14, 128, 272, 18
+    PUSHBUTTON      "卸载(&U)", IDC_UNINSTALL, 114, 152, 56, 16
+    DEFPUSHBUTTON   "安装(&I)", IDC_INSTALL, 174, 152, 56, 16
+    PUSHBUTTON      "关闭(&C)", IDCANCEL, 234, 152, 56, 16
+END

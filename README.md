@@ -159,36 +159,103 @@ python data-tools/generate_zuxia.py --structure --out-dir /tmp/with-structure
 
 # 测量编码质量
 python data-tools/measure_zuxia.py data/zuxia.dict.yaml --labels "足下"
+
+# 生成候选窗编码注释表（每字只留"完整码"，去掉各种前缀）
+python data-tools/generate_codes.py
 ```
 
 ---
 
-## 六、当前状态
+## 六、构建与安装
 
-**这是方案验证阶段，还不是可用的输入法。**
+文本服务与安装程序由应物输入法的 TSF 层移植而来，两者**可以同时安装**：
+
+```text
+应物输入法           %ProgramFiles%\Yingwu     Win+Space 里显示「应物输入法」
+应物音形足下输入法   %ProgramFiles%\Zuxia      Win+Space 里显示「应物音形足下输入法」
+```
+
+安装包、CLSID、注册表键、用户目录、图标全部独立，互不干扰。
+移植怎么做、改了哪些地方，见 [`docs/工程排查.md`](docs/工程排查.md)。
+
+### 6.1 构建文本服务
+
+需要 Visual Studio 2022（含 C++ 桌面开发）与 CMake。
+
+```powershell
+# 渲染图标（只在本仓库重新克隆后需要跑一次）
+pwsh scripts/make-icon.ps1 -Char 足 -Out src/ZuxiaTSF.ico
+pwsh scripts/make-icon.ps1 -Char 足 -Out installer/setup/app.ico
+
+# x64 + x86 编译并暂存到 dist\Zuxia
+pwsh scripts/build.ps1 -Arch all -Configuration Release
+```
+
+### 6.2 无界面验证引擎
+
+不用装、不用界面，直接拿真实的词典跑一遍：
+
+```powershell
+pwsh tools/build-engine-test.ps1 -Arch x64
+copy tools/engine-test.exe dist/Zuxia/x64/
+cd dist/Zuxia/x64; .\engine-test.exe
+```
+
+它必须在 `x64\` 目录里运行——`RimeEngine` 是从自己的模块路径找 `rime.dll` 和 `..\data` 的，
+和文本服务运行时的行为一致。19 项断言覆盖候选编码注释、多音字取音、中文标点与中英切换。
+
+### 6.3 打安装包
+
+```powershell
+pwsh installer/setup/make-setup.ps1            # 顺便重新构建文本服务
+   # 或 -SkipBuild，当 dist\Zuxia 已经暂存好
+```
+
+产物是 `dist\ZuxiaSetup-<版本>.exe`（单文件、32 位、要求管理员权限）与同名 `.sha256`。
+安装后**需要注销重新登录**，或在「设置 → 语言 → 键盘」里手动添加，才会出现在 Win+Space 列表里。
+
+### 6.4 开发期脚本安装
+
+不改注册表、不写「应用和功能」条目，只做 regsvr32，适合反复调试：
+
+```powershell
+pwsh installer/Install-Zuxia.ps1      # 需要管理员
+pwsh installer/Uninstall-Zuxia.ps1 -PurgeUserData
+```
+
+---
+
+## 七、当前状态
+
+**已经是可安装、可打字的输入法了；但只有单字。**
 
 | 项目 | 状态 |
 |---|---|
 | 编码规则设计 | 已确定并实测 |
 | 部件命名表 | 已覆盖全部部件，**待人工复核** |
 | 单字词典 | 已生成 |
-| 词组词典 | **未开始** |
-| Rime 方案文件 | 已写，未部署验证 |
-| Windows 文本服务 | **未开始**（可复用应物输入法的 TSF 层） |
+| 候选窗编码注释 | 已实现（每字最多显示 4 个完整码） |
+| Windows 文本服务 | **已实现**：x64＋x86 MSVC 编译通过，librime 端到端 19 项断言全过 |
+| 单文件安装程序 | **已生成**（`release\ZuxiaSetup-0.1.0.exe`，未签名） |
+| 与应物并存 | 已按独立 CLSID／目录／注册表键设计，**未真机验证** |
+| 词组词典 | **未开始**——打 `tiandi` 目前一个候选都没有 |
+| 真机输入回归 | **未做**（安装、注销重登、在各应用里打字） |
+| 代码签名、ARM64 | 未做 |
 
 ### 下一步
 
-1. **复核部件命名表** —— 机器按读音自动取码的那 1,460 种里，可能还有「读音与通称不符」的漏网之鱼，需要人看一遍
-2. 部署到 librime 实测，验证编码在真实输入下的手感
-3. 生成词组词典（可复用 `generate_phrases.py`，但需按足下的取码规则改写）
-4. 接入文本服务
+1. **词组词典** —— 目前最影响日常使用的一项，`generate_phrases.py` 需按足下取码规则改写
+2. **真机装一遍** —— 安装、注销重登，在记事本与浏览器里实际打字
+3. **复核部件命名表** —— 机器按读音自动取码的那 1,460 种里，可能还有「读音与通称不符」的漏网之鱼
+4. 安装时预编译词库 —— 应物实测首次输入要等约 7.7 秒，见 `docs/工程排查.md` 第三节其一
 
 ---
 
-## 七、许可
+## 八、许可
 
 - 自研代码：MIT，见 `LICENSE-CODE.txt`
 - 词库数据派生自雾凇拼音（rime-ice）：GPL-3.0
 - 汉字结构数据来自 Make Me a Hanzi（LGPL-3.0）与 CJKVI-IDS
+- 文本服务框架源自 Microsoft TSF 示例（MIT）、内嵌 librime（BSD 3-Clause）
 
-详见 `licenses/`。
+详见 `licenses/` 与 `THIRD_PARTY_NOTICES.md`。

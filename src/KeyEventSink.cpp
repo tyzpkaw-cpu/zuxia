@@ -1,0 +1,208 @@
+#include "Diagnostics.h"
+#include "Globals.h"
+#include "TextService.h"
+
+#include <exception>
+
+namespace {
+
+bool HasShortcutModifier() {
+  return (GetKeyState(VK_CONTROL) & 0x8000) != 0 ||
+         (GetKeyState(VK_MENU) & 0x8000) != 0 ||
+         (GetKeyState(VK_LWIN) & 0x8000) != 0 ||
+         (GetKeyState(VK_RWIN) & 0x8000) != 0;
+}
+
+bool IsCompositionControlKey(WPARAM key) {
+  switch (key) {
+    case VK_BACK:
+    case VK_DELETE:
+    case VK_RETURN:
+    case VK_ESCAPE:
+    case VK_SPACE:
+    case VK_LEFT:
+    case VK_RIGHT:
+    case VK_UP:
+    case VK_DOWN:
+    case VK_HOME:
+    case VK_END:
+    case VK_PRIOR:
+    case VK_NEXT:
+      return true;
+    default:
+      return key >= '0' && key <= '9';
+  }
+}
+
+}  // namespace
+
+BOOL CTextService::_IsKeyEaten(ITfContext* /*context*/, WPARAM key) try {
+  const bool ready = _EngineReady();
+  const bool disabled = _IsKeyboardDisabled() != FALSE;
+  const bool open = _IsKeyboardOpen() != FALSE;
+  const bool shortcut = HasShortcutModifier();
+  const bool ascii = !_IsNativeMode();
+
+  // One line per process, the first time a key is judged. It records why the
+  // decision went the way it did -- never which key it was.
+  static LONG reported = 0;
+  if (InterlockedCompareExchange(&reported, 1, 0) == 0) {
+    wchar_t gates[96] = {};
+    swprintf_s(gates, L"ready=%d disabled=%d open=%d shortcut=%d ascii=%d",
+               ready ? 1 : 0, disabled ? 1 : 0, open ? 1 : 0, shortcut ? 1 : 0,
+               ascii ? 1 : 0);
+    zuxia::LogEvent(L"first-key", gates);
+  }
+
+  if (!ready || disabled || !open || shortcut) return FALSE;
+
+  // Western mode: the text service is transparent and every key belongs to
+  // the application.
+  if (ascii) return FALSE;
+
+  // Letters always begin or extend a Zuxia code. Shift is intentionally
+  // ignored; codes are normalized to lowercase before reaching librime.
+  if (key >= 'A' && key <= 'Z') return TRUE;
+
+  // Punctuation goes to the engine so it comes out in its Chinese form --
+  // typing a comma while writing Chinese should give ， not , -- and it does
+  // so whether or not a code is being composed.
+  if (zuxia::RimeEngine::IsPunctuationKey(key)) return TRUE;
+
+  if (!_EngineComposing() && !_IsComposing()) return FALSE;
+  return IsCompositionControlKey(key) ? TRUE : FALSE;
+} catch (...) {
+  // Never let an exception cross back into TSF: it would terminate the host
+  // application. Declining the key is always a safe answer.
+  zuxia::LogEvent(L"exception", L"_IsKeyEaten");
+  return FALSE;
+}
+
+STDMETHODIMP CTextService::OnSetFocus(BOOL foreground) {
+  if (!foreground) _HideCandidateWindow();
+  return S_OK;
+}
+
+STDMETHODIMP CTextService::OnTestKeyDown(ITfContext* context, WPARAM key,
+                                         LPARAM /*flags*/, BOOL* eaten) {
+  if (!eaten) return E_INVALIDARG;
+  *eaten = _IsKeyEaten(context, key);
+  return S_OK;
+}
+
+STDMETHODIMP CTextService::OnKeyDown(ITfContext* context, WPARAM key,
+                                     LPARAM flags, BOOL* eaten) try {
+  if (!eaten) return E_INVALIDARG;
+  *eaten = _IsKeyEaten(context, key);
+  if (*eaten) {
+    const HRESULT result = _InvokeKeyHandler(context, key, flags);
+    if (result != S_OK) *eaten = FALSE;
+  }
+  return S_OK;
+} catch (...) {
+  zuxia::LogEvent(L"exception", L"OnKeyDown");
+  if (eaten) *eaten = FALSE;
+  return S_OK;
+}
+
+STDMETHODIMP CTextService::OnTestKeyUp(ITfContext* /*context*/, WPARAM /*key*/,
+                                       LPARAM /*flags*/, BOOL* eaten) {
+  if (!eaten) return E_INVALIDARG;
+  *eaten = FALSE;
+  return S_OK;
+}
+
+STDMETHODIMP CTextService::OnKeyUp(ITfContext* /*context*/, WPARAM /*key*/,
+                                   LPARAM /*flags*/, BOOL* eaten) {
+  if (!eaten) return E_INVALIDARG;
+  *eaten = FALSE;
+  return S_OK;
+}
+
+STDMETHODIMP CTextService::OnPreservedKey(ITfContext* context, REFGUID guid,
+                                          BOOL* eaten) try {
+  if (!eaten) return E_INVALIDARG;
+  *eaten = FALSE;
+  if (!IsEqualGUID(guid, c_guidToggleAsciiKey)) return S_OK;
+  if (!_EngineReady() || _IsKeyboardDisabled()) return S_OK;
+
+  // Leaving Chinese mode mid-code would otherwise strand the pre-edit text in
+  // the application.
+  if (_IsComposing()) _EndComposition(context);
+  _HideCandidateWindow();
+  // Writes the session-wide compartment; the resulting OnChange applies the
+  // mode to every process, this one included.
+  _ToggleInputMode();
+  *eaten = TRUE;
+  return S_OK;
+} catch (...) {
+  zuxia::LogEvent(L"exception", L"OnPreservedKey");
+  if (eaten) *eaten = FALSE;
+  return S_OK;
+}
+
+BOOL CTextService::_InitKeyEventSink() {
+  if (!_pThreadMgr) return FALSE;
+  ITfKeystrokeMgr* manager = nullptr;
+  if (FAILED(_pThreadMgr->QueryInterface(
+          IID_ITfKeystrokeMgr, reinterpret_cast<void**>(&manager)))) {
+    return FALSE;
+  }
+  const HRESULT result = manager->AdviseKeyEventSink(
+      _tfClientId, static_cast<ITfKeyEventSink*>(this), TRUE);
+  manager->Release();
+  return SUCCEEDED(result);
+}
+
+void CTextService::_UninitKeyEventSink() {
+  if (!_pThreadMgr) return;
+  ITfKeystrokeMgr* manager = nullptr;
+  if (SUCCEEDED(_pThreadMgr->QueryInterface(
+          IID_ITfKeystrokeMgr, reinterpret_cast<void**>(&manager)))) {
+    manager->UnadviseKeyEventSink(_tfClientId);
+    manager->Release();
+  }
+}
+
+// A tapped Shift switches between Chinese and Western input. TSF delivers
+// this through TF_MOD_ON_KEYUP, which only fires when Shift was
+// pressed and released with no other key in between -- so Shift+letter and
+// Shift+arrow keep working normally and no editor shortcut is shadowed.
+BOOL CTextService::_InitPreservedKey() {
+  if (!_pThreadMgr) return FALSE;
+  ITfKeystrokeMgr* manager = nullptr;
+  if (FAILED(_pThreadMgr->QueryInterface(
+          IID_ITfKeystrokeMgr, reinterpret_cast<void**>(&manager)))) {
+    return FALSE;
+  }
+  TF_PRESERVEDKEY key = {};
+  key.uVKey = VK_SHIFT;
+  key.uModifiers = TF_MOD_ON_KEYUP;
+  const HRESULT result = manager->PreserveKey(
+      _tfClientId, c_guidToggleAsciiKey, &key, TEXTSERVICE_ASCII_KEY_DESC,
+      static_cast<ULONG>(wcslen(TEXTSERVICE_ASCII_KEY_DESC)));
+  manager->Release();
+  // A failure here costs the toggle, not the text service.
+  if (FAILED(result)) {
+    // Commonly TF_E_ALREADY_EXISTS when another input method already holds
+    // the key. The caller treats this as non-fatal.
+    zuxia::LogFailure(L"preserved-key-failed",
+                       static_cast<unsigned long>(result));
+  } else {
+    zuxia::LogEvent(L"preserved-key", L"Shift registered");
+  }
+  return SUCCEEDED(result);
+}
+
+void CTextService::_UninitPreservedKey() {
+  if (!_pThreadMgr) return;
+  ITfKeystrokeMgr* manager = nullptr;
+  if (SUCCEEDED(_pThreadMgr->QueryInterface(
+          IID_ITfKeystrokeMgr, reinterpret_cast<void**>(&manager)))) {
+    TF_PRESERVEDKEY key = {};
+    key.uVKey = VK_SHIFT;
+    key.uModifiers = TF_MOD_ON_KEYUP;
+    manager->UnpreserveKey(c_guidToggleAsciiKey, &key);
+    manager->Release();
+  }
+}

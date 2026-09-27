@@ -5,3 +5,15 @@ __pycache__/
 .vs/
 /tools/*.exe
 /tools/rime.dll
+
+# 安装包构建产物（installer/setup/make-setup.ps1 生成）
+/installer/setup/payload.cab
+/installer/setup/payload.ddf
+/installer/setup/payload_info.h
+/installer/setup/setup.u16.rc
+/installer/setup/*.res
+/installer/setup/*.exe
+/installer/setup/obj_*/
+
+# 发布用安装包（release/ 下的成品是有意提交的）
+!/release/

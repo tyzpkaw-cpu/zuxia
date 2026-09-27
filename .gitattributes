@@ -4,4 +4,5 @@
 *.dll binary
 *.ico binary
 data/zuxia.dict.yaml -diff
+data/zuxia_char_codes.dict.yaml -diff
 data-tools/sources/* -diff
