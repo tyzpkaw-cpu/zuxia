@@ -170,11 +170,15 @@ void RimeEngine::AnnotateCode(const std::wstring& typed, Candidate* candidate) {
   std::wstring comment;
   size_t shown = 0;
   for (const std::wstring& code : found->second) {
+    // Filter first, cap second. The other order appends the ellipsis as soon
+    // as the loop reaches a code the typed prefix rules out, promising more
+    // codes that do not exist: 行 has nine complete codes across three
+    // readings, but under `hang` only three of them are reachable.
+    if (!typed.empty() && code.rfind(typed, 0) != 0) continue;
     if (shown == kMaxCodes) {
       comment += L" \u2026";
       break;
     }
-    if (!typed.empty() && code.rfind(typed, 0) != 0) continue;
     if (!comment.empty()) comment += L' ';
     comment += code;
     ++shown;
