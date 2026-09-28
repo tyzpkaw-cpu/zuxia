@@ -316,6 +316,7 @@ bool DoInstall(std::wstring* error) {
   const wchar_t* required[] = {L"\\data\\zuxia.schema.yaml",
                                L"\\data\\zuxia.dict.yaml",
                                L"\\data\\zuxia_char_codes.dict.yaml",
+                               L"\\data\\zuxia.extended.dict.yaml",
                                L"\\x86\\" ZX_TSF_DLL, L"\\x86\\rime.dll"};
   for (const wchar_t* relative : required) {
     if (!zx::FileExists(staging + relative)) {

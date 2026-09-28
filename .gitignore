@@ -17,3 +17,7 @@ __pycache__/
 
 # 发布用安装包（release/ 下的成品是有意提交的）
 !/release/
+
+# 词组码表：42 万行 12 MB，由 data-tools/generate_phrases.py 现生成。
+# 进不了 git 也没必要 —— 它完全由 data-tools/sources/ 决定。
+/data/zuxia.extended.dict.yaml

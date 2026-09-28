@@ -156,6 +156,28 @@ python data-tools/generate_zuxia.py --report build-reports/zuxia_generator_repor
 它把结果写进 `data-tools/sources/structure-overrides.tsv`，生成器优先采信这张表。
 文件为空就完全按生成器自己的判定走 —— **当前就是空的**。
 
+### 2.8 词组
+
+词组码与单字同构，只是按**列**排：全拼串 ＋ 逐位结构串 ＋ 逐位部件串。
+
+```text
+苏瑶     su yao   +  s z   +  c(艹) w(王)   ->  suyao / suyaosz / suyaoszcw
+你好     ni hao   +  z z   +  r(人) n(女)   ->  nihao / nihaozz / nihaozzrn
+杨志鹏   yang zhi peng + z s z + m(木) s(士) p(朋)
+```
+
+三档都是有效码，打到候选出现就停 —— 和单字的逐级加码是同一套规则。
+
+**词组的部件位只认每个字的第一个部件**（左边的／上面的／外面的那个），它的
+任何叫法都认。单字那边是「任意部件、任意顺序」，词组这边做不到：全展开是
+568 万行 150 MB，Rime 的表编译不动。真正的任意部件要靠
+[`docs/列式解码.md`](docs/列式解码.md) 里那个不查表的解码器，**它还没移植进 C++**。
+
+词表收的是 rime-ice base 按词频取的前 12 万词。**没收进来的词**（人名、生僻
+搭配，比如上面的「苏瑶」）靠 Rime 的连打成句逐字拼出来 —— 但**只有全拼那一
+档**：结构串和部件串是按列排的，Rime 的分词器切不动。要让「苏瑶」也能用
+`suyaoszcw` 打出来，得等解码器进 C++。
+
 ---
 
 ## 三、部件命名表
@@ -223,6 +245,8 @@ python data-tools/generate_zuxia.py --report build-reports/zuxia_generator_repor
 | 平均每字码数 | 8.13 |
 | 单字最多码数 | 36 |
 | 不同的码 | 31,572 |
+| 词组条数 | 119,964（rime-ice base 按词频取前 12 万） |
+| 词组编码行数 | 421,131（`data/zuxia.extended.dict.yaml`，12.2 MB，不进 git，打包前现生成） |
 
 每字多码是方案的设计结果，不是冗余：它正是「任意两部件、顺序不限、多名称」这三条放宽规则的代价与收益。相比无结构的对照构建（57,746 行），结构码使行数增加约 20%，因为每个中间级都多了一层。
 
@@ -243,6 +267,9 @@ python data-tools/generate_zuxia.py --no-structure --out-dir /tmp/no-structure
 
 # 测量编码质量
 python data-tools/measure_zuxia.py data/zuxia.dict.yaml --labels "足下 0.2.0"
+
+# 生成词组码表（12 MB，.gitignore 掉了，构建前必须先跑一次）
+python data-tools/generate_phrases.py
 
 # 生成候选窗编码注释表（每字只留"完整码"，去掉各种前缀）
 python data-tools/generate_codes.py
@@ -331,6 +358,9 @@ DPI 走，颜色跟着系统深浅色走。
 需要 Visual Studio 2022（含 C++ 桌面开发）与 CMake。
 
 ```powershell
+# 词组码表（42 万行 12 MB，不在 git 里；缺了它 CMake 会直接报错停下）
+python data-tools/generate_phrases.py
+
 # 渲染图标（只在本仓库重新克隆后需要跑一次）
 pwsh scripts/make-icon.ps1 -Char 足 -Out src/ZuxiaTSF.ico
 pwsh scripts/make-icon.ps1 -Char 足 -Out installer/setup/app.ico
@@ -381,7 +411,7 @@ pwsh installer/Uninstall-Zuxia.ps1 -PurgeUserData
 
 ## 七、当前状态
 
-**已经是可安装、可打字的输入法了；但只有单字。0.2.0 改了码位，安装包需要重出。**
+**已经是可安装、可打字的输入法了。0.2.0 改了码位，安装包需要重出。**
 
 | 项目 | 状态 |
 |---|---|
@@ -400,9 +430,9 @@ pwsh installer/Uninstall-Zuxia.ps1 -PurgeUserData
 | **ARM64** | 安装器已能正常安装并在 x86 / x64 模拟 / Arm64EC 应用里可用；**ARM64 原生应用不可用**（架构所限）。**原生支持暂不做**（2026-09-27 决定，理由与代价见 [`docs/审计发现.md`](docs/审计发现.md) 第四节） |
 | Win7 / 8.1 | 找不到静态阻断，但**无实测证据**，不列入支持范围 |
 | 个性化设置 | **已实现（档 A）**：候选窗字体、字号、横竖排、配色写在 `%LOCALAPPDATA%\Zuxia\设置.txt`，改完半秒生效。**无设置界面**，也未真机验证 |
-| 词组码位 | **已定案**：全拼串＋逐位结构串＋逐位部件串，与单字规则同构 |
+| 词组码位 | **已定案**：全拼串＋逐位结构串＋逐位部件串，与单字规则同构（§2.8） |
 | 列式解码器 | **Python 原型已通过**（[`docs/列式解码.md`](docs/列式解码.md)）。词库里没有的词纯拼也能出：每字一部件 97.24% 首选，两部件 99.40%；自检 11 项已进 CI。**C++ 版未移植** |
-| 词组词典 | **未开始**——打 `tiandi` 目前一个候选都没有 |
+| 词组词典 | **已实现**：12 万词 / 42 万行，三档码都出；词表外的词靠连打成句顶上（只限全拼档）。限制：部件位只认每个字的**第一个部件** —— 要「任意部件」得等 C++ 解码器。engine-test 有 6 条词组断言。**未真机验证** |
 | 真机输入回归 | **未做**（安装、注销重登、在各应用里打字） |
 
 ### 下一步
@@ -411,7 +441,8 @@ pwsh installer/Uninstall-Zuxia.ps1 -PurgeUserData
 1. **修 `ZUXIA_COM_GUARD_*` 那条**（约 17 个入口点无异常防护 → 异常逃逸即宿主崩溃、Word 丢文档）。
    这是全部发现里唯一会毁用户数据的，**建议在应物上游先修**再重跑移植脚本
 2. **签名**：买 OV/EV 证书，然后 `make-setup.ps1 -Sign` 一条命令出签名版
-3. **把列式解码器移植进 `src/RimeEngine.cpp`** —— 原型指标已达标，清单见
+3. **把列式解码器移植进 `src/RimeEngine.cpp`** —— 这一步才能拿到「任意部件」和
+   「词库里没有的词也能打」。原型指标已达标，清单见
    [`docs/列式解码.md`](docs/列式解码.md) 末节；之后词组表只当排序先验，可以大幅瘦身
 4. **真机装一遍** —— 安装、注销重登，在记事本与浏览器里实际打字；有 ARM64 设备就顺手跑一遍 `scripts/verify-install.ps1`
 

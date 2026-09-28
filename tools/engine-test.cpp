@@ -116,6 +116,25 @@ bool Mentions(const std::wstring& comment, const wchar_t* code) {
   return false;
 }
 
+bool Offers(zuxia::RimeEngine* engine, const char* keys,
+            const wchar_t* want_text) {
+  return CommentOf(engine, keys, want_text) != L"(not found)";
+}
+
+// 词表里没有的组合靠 enable_sentence 逐字拼。断言「出了个两字候选」而不是
+// 某个具体的词：拼出来是 苏瑶 还是 素要 由字频决定，会随词表变。
+bool OffersLength(zuxia::RimeEngine* engine, const char* keys, size_t len) {
+  engine->Clear();
+  zuxia::EngineSnapshot snapshot;
+  for (const char* p = keys; *p; ++p) {
+    snapshot = engine->ProcessKey(static_cast<int>(*p), 0);
+  }
+  for (const zuxia::Candidate& candidate : snapshot.candidates) {
+    if (candidate.text.size() == len) return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 int main() {
@@ -140,6 +159,8 @@ int main() {
   Case(&engine, "hang", 5);
   Case(&engine, "xing", 5);
   Case(&engine, "tiandi", 5);
+  Case(&engine, "tiandidz", 5);
+  Case(&engine, "tiandidzyt", 5);
 
   printf("\nchecks:\n");
   // 清 = 氵(水 s) + 青(q, 另有别名 月 y), 左右 structure (z)。满码是
@@ -167,6 +188,22 @@ int main() {
          EveryCodeStartsWith(CommentOf(&engine, "hang", L"行"), L"hang"));
   Expect("行 under `xing` shows only its xing codes",
          EveryCodeStartsWith(CommentOf(&engine, "xing", L"行"), L"xing"));
+
+  // 词组：全拼 -> 加逐位结构串 -> 加逐位部件串。天 独体(d) 一(y),
+  // 地 左右(z) 土(t)。三档都要能打出来 —— 0.2.0 装出来时一档都打不出，
+  // 因为词组码表根本没生成。
+  printf("\nphrases:\n");
+  Expect("天地 under bare pinyin `tiandi`", Offers(&engine, "tiandi", L"天地"));
+  Expect("天地 under `tiandidz` (structure column)",
+         Offers(&engine, "tiandidz", L"天地"));
+  Expect("天地 under `tiandidzyt` (component column)",
+         Offers(&engine, "tiandidzyt", L"天地"));
+  Expect("你好 under bare pinyin `nihao`", Offers(&engine, "nihao", L"你好"));
+  Expect("你好 under `nihaozzrn` (full columnar code)",
+         Offers(&engine, "nihaozzrn", L"你好"));
+  // 苏瑶 是个人名，rime-ice 的 12 万词里没有。全拼那一档要有东西出来。
+  Expect("词表外的 `suyao` 仍拼得出一个两字候选",
+         OffersLength(&engine, "suyao", 2));
 
   // Chinese text wants Chinese marks. The engine is handed the plain ASCII
   // character; librime's punctuator is what turns it into the full-width form.

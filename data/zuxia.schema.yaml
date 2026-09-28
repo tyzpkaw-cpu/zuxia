@@ -95,10 +95,14 @@ speller:
   auto_select: false
 
 translator:
-  dictionary: zuxia
+  # 单字表 zuxia.dict.yaml 被 zuxia.extended.dict.yaml import 进来。
+  dictionary: zuxia.extended
   enable_charset_filter: true
   enable_completion: true
-  enable_sentence: false
+  # 连打成句：词表里没有的词（人名、生僻搭配）靠逐字拼接顶上。关掉的话
+  # `suyao` 这种词表外的组合一个候选都没有。只对全拼那一档有效 —— 结构串
+  # 和部件串是按「列」排的，Rime 的分词器切不动，那要等 C++ 解码器。
+  enable_sentence: true
   enable_user_dict: false
   encode_commit_history: false
   max_phrase_length: 12

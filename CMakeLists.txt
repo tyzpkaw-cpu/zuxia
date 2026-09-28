@@ -74,6 +74,13 @@ add_custom_command(TARGET ZuxiaTSF POST_BUILD
 
 install(TARGETS ZuxiaTSF RUNTIME DESTINATION "${ZUXIA_ARCH}")
 install(FILES "${RIME_RUNTIME}" DESTINATION "${ZUXIA_ARCH}")
+# 词组码表不进 git（12 MB），现生成。缺了它 zuxia.dict.yaml 的
+# import_tables 会在 Rime 部署时失败，输入法一个候选也出不来 ——
+# 那种错只在运行时才看得见，所以在这里就拦住。
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/zuxia.extended.dict.yaml")
+  message(FATAL_ERROR
+          "缺 data/zuxia.extended.dict.yaml，先跑：python data-tools/generate_phrases.py")
+endif()
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/" DESTINATION data
         FILES_MATCHING PATTERN "*.yaml")
 install(FILES README.md LICENSE-CODE.txt THIRD_PARTY_NOTICES.md
