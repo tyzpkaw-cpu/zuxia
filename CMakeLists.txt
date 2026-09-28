@@ -88,7 +88,10 @@ target_compile_options(ZuxiaSettings PRIVATE
   /utf-8 /W4 /EHsc /permissive- /Zc:__cplusplus)
 target_link_libraries(ZuxiaSettings PRIVATE
   comctl32 comdlg32 shell32 user32 gdi32 advapi32 ole32)
-target_link_options(ZuxiaSettings PRIVATE /Brepro)
+# 清单由 src/ZuxiaSettings.rc 自己带（要 comctl32 v6 的视觉样式和
+# dpiAware）。链接器默认还会再生成一份塞进去，两份都是 id 1 的
+# RT_MANIFEST，cvtres 直接报 CVT1100 duplicate resource。关掉它那份。
+target_link_options(ZuxiaSettings PRIVATE /Brepro /MANIFEST:NO)
 set_target_properties(ZuxiaSettings PROPERTIES
   OUTPUT_NAME "ZuxiaSettings"
   MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
