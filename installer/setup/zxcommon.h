@@ -22,6 +22,10 @@
 #define ZX_ARP_KEY      L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ZuxiaIME"
 #define ZX_PRODUCT_KEY  L"SOFTWARE\\Zuxia"
 #define ZX_UNINST_EXE   L"ZuxiaUninstall.exe"
+#define ZX_SETTINGS_EXE L"ZuxiaSettings.exe"
+// 开始菜单里唯一的入口。Windows 11 默认不显示语言栏，没有这个快捷方式，
+// 设置程序就等于不存在 —— 用户根本不会知道有它。
+#define ZX_SHORTCUT     L"足下输入法设置.lnk"
 
 // {A0073A11-FF52-4185-A655-D0C9171B7850} and
 // {699B0EC1-3FDB-415D-89C0-0E55AA2EFFAF}, mirroring src/Globals.cpp.
@@ -293,6 +297,17 @@ inline bool RemoveKey(const std::wstring& path) {
   const LONG deleted = RegDeleteKeyExW(HKEY_LOCAL_MACHINE, path.c_str(),
                                        NativeView(), 0);
   return deleted == ERROR_SUCCESS || deleted == ERROR_FILE_NOT_FOUND;
+}
+
+inline std::wstring StartMenuShortcut() {
+  PWSTR folder = nullptr;
+  if (FAILED(SHGetKnownFolderPath(FOLDERID_CommonPrograms, 0, nullptr,
+                                  &folder))) {
+    return std::wstring();
+  }
+  std::wstring path(folder);
+  CoTaskMemFree(folder);
+  return path + L"\\" ZX_SHORTCUT;
 }
 
 inline std::wstring ReadInstallRoot(const wchar_t* product_key = ZX_PRODUCT_KEY) {

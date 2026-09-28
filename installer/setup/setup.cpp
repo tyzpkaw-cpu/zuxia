@@ -263,6 +263,38 @@ bool PublishArm64Registration(const std::wstring& x64_module) {
          PublishLanguageProfile(x64_module);
 }
 
+// 开始菜单入口。装不上不算安装失败：输入法本身照常能用，设置也还能靠手改
+// %LOCALAPPDATA%\Zuxia\设置.txt 完成。
+bool CreateStartMenuShortcut(const std::wstring& root) {
+  const std::wstring link = zx::StartMenuShortcut();
+  if (link.empty()) return false;
+  std::wstring target = root + L"\\x64\\" ZX_SETTINGS_EXE;
+  if (!zx::FileExists(target)) target = root + L"\\x86\\" ZX_SETTINGS_EXE;
+  if (!zx::FileExists(target)) return false;
+
+  const HRESULT started = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  IShellLinkW* shortcut = nullptr;
+  HRESULT hr = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_IShellLinkW,
+                                reinterpret_cast<void**>(&shortcut));
+  if (SUCCEEDED(hr) && shortcut) {
+    shortcut->SetPath(target.c_str());
+    shortcut->SetWorkingDirectory(root.c_str());
+    shortcut->SetDescription(L"改候选窗的字体、字号、配色与任务栏图标");
+    shortcut->SetIconLocation(target.c_str(), 0);
+    IPersistFile* file = nullptr;
+    hr = shortcut->QueryInterface(IID_IPersistFile,
+                                  reinterpret_cast<void**>(&file));
+    if (SUCCEEDED(hr) && file) {
+      hr = file->Save(link.c_str(), TRUE);
+      file->Release();
+    }
+    shortcut->Release();
+  }
+  if (SUCCEEDED(started)) CoUninitialize();
+  return SUCCEEDED(hr);
+}
+
 bool DoInstall(std::wstring* error) {
   const std::wstring root = g_install_root;
   const std::wstring staging = root + L".new";
@@ -317,6 +349,8 @@ bool DoInstall(std::wstring* error) {
                                L"\\data\\zuxia.dict.yaml",
                                L"\\data\\zuxia_char_codes.dict.yaml",
                                L"\\data\\zuxia.extended.dict.yaml",
+                               L"\\x64\\" ZX_SETTINGS_EXE,
+                               L"\\x86\\" ZX_SETTINGS_EXE,
                                L"\\x86\\" ZX_TSF_DLL, L"\\x86\\rime.dll"};
   for (const wchar_t* relative : required) {
     if (!zx::FileExists(staging + relative)) {
@@ -392,6 +426,10 @@ bool DoInstall(std::wstring* error) {
     UnregisterAt(root);
     return false;
   }
+
+  Status(L"正在创建开始菜单快捷方式…");
+  Progress(98);
+  CreateStartMenuShortcut(root);
 
   Progress(100);
   return true;

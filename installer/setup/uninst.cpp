@@ -34,6 +34,9 @@ int RunUninstall(const std::wstring& root) {
     zx::RemoveKey(L"SOFTWARE\\Microsoft\\CTF\\TIP\\" ZX_CLSID);
   }
 
+  const std::wstring shortcut = zx::StartMenuShortcut();
+  if (!shortcut.empty()) DeleteFileW(shortcut.c_str());
+
   zx::RemoveKey(ZX_ARP_KEY);
   zx::RemoveKey(ZX_PRODUCT_KEY);
 

@@ -72,7 +72,29 @@ add_custom_command(TARGET ZuxiaTSF POST_BUILD
           "${RIME_RUNTIME}" "$<TARGET_FILE_DIR:ZuxiaTSF>/rime.dll"
   COMMENT "Copying librime runtime")
 
+# 设置界面。独立进程，不是 DLL 里的窗口 —— 文本服务跑在 Word、浏览器的
+# 进程里，在那里面开设置窗口等于把自己的 bug 直接摊到宿主身上。它与
+# 文本服务共用 src/Settings.cpp，读写的是同一个 %LOCALAPPDATA%\Zuxia\设置.txt。
+add_executable(ZuxiaSettings WIN32
+  src/SettingsApp.cpp
+  src/Settings.cpp
+  src/ZuxiaSettings.rc)
+target_compile_features(ZuxiaSettings PRIVATE cxx_std_17)
+target_include_directories(ZuxiaSettings PRIVATE src)
+target_compile_definitions(ZuxiaSettings PRIVATE
+  UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+  WINVER=0x0A00 _WIN32_WINNT=0x0A00)
+target_compile_options(ZuxiaSettings PRIVATE
+  /utf-8 /W4 /EHsc /permissive- /Zc:__cplusplus)
+target_link_libraries(ZuxiaSettings PRIVATE
+  comctl32 comdlg32 shell32 user32 gdi32 advapi32 ole32)
+target_link_options(ZuxiaSettings PRIVATE /Brepro)
+set_target_properties(ZuxiaSettings PROPERTIES
+  OUTPUT_NAME "ZuxiaSettings"
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 install(TARGETS ZuxiaTSF RUNTIME DESTINATION "${ZUXIA_ARCH}")
+install(TARGETS ZuxiaSettings RUNTIME DESTINATION "${ZUXIA_ARCH}")
 install(FILES "${RIME_RUNTIME}" DESTINATION "${ZUXIA_ARCH}")
 # 词组码表不进 git（12 MB），现生成。缺了它 zuxia.dict.yaml 的
 # import_tables 会在 Rime 部署时失败，输入法一个候选也出不来 ——

@@ -45,4 +45,14 @@ Appearance CurrentAppearance();
 // 这样用户打开它就知道能改什么，不必去翻文档。
 std::wstring SettingsFilePath();
 
+// 下面两个是给设置程序 ZuxiaSettings.exe 用的。输入法本体只用上面那个
+// CurrentAppearance()，它带缓存；这两个每次都真的读盘 / 写盘。
+
+// 读一次设置文件。文件不在、读不动、内容是坏的，都返回默认值。
+Appearance LoadAppearance();
+
+// 整份重写设置文件，注释一并写回去 —— 设置程序改完之后，用记事本打开
+// 仍然要看得懂。写成功返回 true。输入法那边最慢半秒就会看到改动。
+bool SaveAppearance(const Appearance& look);
+
 }  // namespace zuxia

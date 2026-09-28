@@ -1,6 +1,7 @@
 #include "InputMode.h"
 
 #include <olectl.h>
+#include <shellapi.h>
 
 #include <algorithm>
 #include <cstring>
@@ -8,6 +9,7 @@
 #include <vector>
 
 #include "Diagnostics.h"
+#include "Globals.h"
 #include "Settings.h"
 #include "TextService.h"
 
@@ -124,6 +126,22 @@ HICON RenderGlyphIcon(const std::wstring& glyph) {
   return icon;
 }
 
+// 设置程序和这个 DLL 放在同一个目录里（x64\ 或 x86\），谁被载入就起谁，
+// 位数天然对得上。起成独立进程是刻意的：这段代码跑在 Word、浏览器的进程
+// 里，绝不能在这里开窗口 —— 设置界面卡一下，宿主就跟着卡。
+void LaunchSettings() {
+  wchar_t path[MAX_PATH] = {};
+  const DWORD length = GetModuleFileNameW(g_hInst, path, ARRAYSIZE(path));
+  if (length == 0 || length >= ARRAYSIZE(path)) return;
+  std::wstring exe(path, length);
+  const size_t slash = exe.find_last_of(L'\\');
+  if (slash == std::wstring::npos) return;
+  exe.resize(slash + 1);
+  exe += L"ZuxiaSettings.exe";
+  // 起不来就算了：设置文件手改照样有效，不值得为此弹个错误框打断打字。
+  ShellExecuteW(nullptr, L"open", exe.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
 }  // namespace
 
 // ------------------------------------------------------------- CModeButton --
@@ -196,6 +214,9 @@ STDAPI CModeButton::GetTooltipString(BSTR* tooltip) {
 STDAPI CModeButton::OnClick(TfLBIClick click, POINT /*point*/,
                             const RECT* /*area*/) {
   if (click == TF_LBI_CLK_LEFT && service_) service_->_ToggleInputMode();
+  // 右键 = 设置。语言栏上这个按钮是输入法在系统里唯一固定的抓手，
+  // 开始菜单那个快捷方式被用户删了，还能从这里进去。
+  if (click == TF_LBI_CLK_RIGHT) LaunchSettings();
   return S_OK;
 }
 

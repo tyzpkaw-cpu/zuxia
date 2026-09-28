@@ -91,7 +91,8 @@ bool ReadUtf8(const std::wstring& path, std::wstring* out) {
   return true;
 }
 
-bool WriteUtf8(const std::wstring& path, const std::wstring& text) {
+bool WriteUtf8(const std::wstring& path, const std::wstring& text,
+               bool overwrite) {
   const int needed = WideCharToMultiByte(CP_UTF8, 0, text.c_str(),
                                          static_cast<int>(text.size()),
                                          nullptr, 0, nullptr, nullptr);
@@ -100,8 +101,8 @@ bool WriteUtf8(const std::wstring& path, const std::wstring& text) {
   WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
                       bytes.data(), needed, nullptr, nullptr);
   HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
-                            nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
-                            nullptr);
+                            nullptr, overwrite ? CREATE_ALWAYS : CREATE_NEW,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) return false;
   // 带 BOM 写出去：记事本不看 BOM 就会把中文当 ANSI 读，一开就是乱码。
   const char bom[3] = {'\xEF', '\xBB', '\xBF'};
@@ -113,38 +114,61 @@ bool WriteUtf8(const std::wstring& path, const std::wstring& text) {
   return true;
 }
 
-const wchar_t kDefaultFile[] =
-    L"# 应物音形足下输入法 —— 候选窗外观设置\r\n"
-    L"#\r\n"
-    L"# 改完保存即可，最慢半秒生效，不用重启输入法。\r\n"
-    L"# 井号开头的是说明，删不删都行。写坏了不要紧：认不出来的行会被跳过，\r\n"
-    L"# 整个文件删掉则恢复默认，下次打字会重新生成一份。\r\n"
-    L"#\r\n"
-    L"# 颜色写 #RRGGBB（网页那种十六进制），或者写「跟随系统」。\r\n"
-    L"\r\n"
-    L"字体 = Microsoft YaHei UI\r\n"
-    L"字号 = 16\r\n"
-    L"\r\n"
-    L"# 竖排 = 候选一行一个；横排 = 候选排成一行\r\n"
-    L"候选排列 = 竖排\r\n"
-    L"\r\n"
-    L"行高 = 30\r\n"
-    L"内边距 = 8\r\n"
-    L"最小宽度 = 220\r\n"
-    L"最大宽度 = 720\r\n"
-    L"\r\n"
-    L"窗口背景 = 跟随系统\r\n"
-    L"正文颜色 = 跟随系统\r\n"
-    L"编码颜色 = 跟随系统\r\n"
-    L"选中底色 = #2368BE\r\n"
-    L"选中文字 = #FFFFFF\r\n"
-    L"\r\n"
-    L"# 任务栏右下角那个输入指示器上显示的字，一个字最好看。\r\n"
-    L"任务栏图标 = 足\r\n"
-    L"西文图标 = A\r\n"
-    L"\r\n"
-    L"# 候选个数、中英切换键这些不在这里 —— 它们属于 librime 的行为，\r\n"
-    L"# 在安装目录的 data\\default.yaml 与 data\\zuxia.schema.yaml 里。\r\n";
+std::wstring Num(int value) { return std::to_wstring(value); }
+
+std::wstring Hex(COLORREF color) {
+  static const wchar_t* kDigits = L"0123456789ABCDEF";
+  const int parts[3] = {GetRValue(color), GetGValue(color), GetBValue(color)};
+  std::wstring out = L"#";
+  for (int part : parts) {
+    out += kDigits[(part >> 4) & 0xF];
+    out += kDigits[part & 0xF];
+  }
+  return out;
+}
+
+std::wstring ColorField(bool follow_system, COLORREF color) {
+  return follow_system ? std::wstring(L"跟随系统") : Hex(color);
+}
+
+// 设置文件的全文。注释每次都原样写回去 —— 用设置程序改过之后，拿记事本
+// 打开仍然要看得懂能改什么。
+std::wstring Serialize(const Appearance& look) {
+  std::wstring out;
+  out += L"# 应物音形足下输入法 —— 候选窗外观设置\r\n";
+  out += L"#\r\n";
+  out += L"# 改完保存即可，最慢半秒生效，不用重启输入法。\r\n";
+  out += L"# 也可以用开始菜单里的「足下输入法设置」改，那边是图形界面。\r\n";
+  out += L"# 井号开头的是说明，删不删都行。写坏了不要紧：认不出来的行会被跳过，\r\n";
+  out += L"# 整个文件删掉则恢复默认，下次打字会重新生成一份。\r\n";
+  out += L"#\r\n";
+  out += L"# 颜色写 #RRGGBB（网页那种十六进制），或者写「跟随系统」。\r\n";
+  out += L"\r\n";
+  out += L"字体 = " + look.font + L"\r\n";
+  out += L"字号 = " + Num(look.font_size) + L"\r\n";
+  out += L"\r\n";
+  out += L"# 竖排 = 候选一行一个；横排 = 候选排成一行\r\n";
+  out += L"候选排列 = " + std::wstring(look.horizontal ? L"横排" : L"竖排") + L"\r\n";
+  out += L"\r\n";
+  out += L"行高 = " + Num(look.row_height) + L"\r\n";
+  out += L"内边距 = " + Num(look.padding) + L"\r\n";
+  out += L"最小宽度 = " + Num(look.min_width) + L"\r\n";
+  out += L"最大宽度 = " + Num(look.max_width) + L"\r\n";
+  out += L"\r\n";
+  out += L"窗口背景 = " + ColorField(look.system_background, look.background) + L"\r\n";
+  out += L"正文颜色 = " + ColorField(look.system_text, look.text) + L"\r\n";
+  out += L"编码颜色 = " + ColorField(look.system_dim, look.dim) + L"\r\n";
+  out += L"选中底色 = " + Hex(look.highlight_bg) + L"\r\n";
+  out += L"选中文字 = " + Hex(look.highlight_fg) + L"\r\n";
+  out += L"\r\n";
+  out += L"# 任务栏右下角那个输入指示器上显示的字，一个字最好看。\r\n";
+  out += L"任务栏图标 = " + look.tray_chinese + L"\r\n";
+  out += L"西文图标 = " + look.tray_western + L"\r\n";
+  out += L"\r\n";
+  out += L"# 候选个数、中英切换键这些不在这里 —— 它们属于 librime 的行为，\r\n";
+  out += L"# 在安装目录的 data\\default.yaml 与 data\\zuxia.schema.yaml 里。\r\n";
+  return out;
+}
 
 bool ParseColor(const std::wstring& value, COLORREF* out, bool* system) {
   const std::wstring lowered = Lower(value);
@@ -244,6 +268,23 @@ std::wstring SettingsFilePath() {
   return path.wstring();
 }
 
+Appearance LoadAppearance() {
+  std::wstring text;
+  if (!ReadUtf8(SettingsFilePath(), &text)) return Appearance();
+  return Parse(text);
+}
+
+bool SaveAppearance(const Appearance& look) {
+  const bool ok = WriteUtf8(SettingsFilePath(), Serialize(look), true);
+  if (ok) {
+    // 下一次 CurrentAppearance() 必须重读，别等那 500 ms 的轮询 ——
+    // 同一个进程里若也在打字（引擎自测程序就是），会看到旧值。
+    std::lock_guard<std::mutex> guard(g_mutex);
+    g_loaded = false;
+  }
+  return ok;
+}
+
 Appearance CurrentAppearance() {
   std::lock_guard<std::mutex> guard(g_mutex);
   const DWORD now = GetTickCount();
@@ -255,7 +296,7 @@ Appearance CurrentAppearance() {
   if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info)) {
     // 还没有这个文件。写一份默认的，让用户打开就看得见能改什么。
     // 写不出来也无所谓（只读目录、被杀软拦了），默认值照样用。
-    WriteUtf8(path, kDefaultFile);
+    WriteUtf8(path, Serialize(Appearance()), false);
     if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info)) {
       g_appearance = Appearance();
       g_loaded = true;
