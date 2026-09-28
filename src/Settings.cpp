@@ -139,6 +139,10 @@ const wchar_t kDefaultFile[] =
     L"选中底色 = #2368BE\r\n"
     L"选中文字 = #FFFFFF\r\n"
     L"\r\n"
+    L"# 任务栏右下角那个输入指示器上显示的字，一个字最好看。\r\n"
+    L"任务栏图标 = 足\r\n"
+    L"西文图标 = A\r\n"
+    L"\r\n"
     L"# 候选个数、中英切换键这些不在这里 —— 它们属于 librime 的行为，\r\n"
     L"# 在安装目录的 data\\default.yaml 与 data\\zuxia.schema.yaml 里。\r\n";
 
@@ -207,6 +211,11 @@ void ApplyLine(const std::wstring& raw, Appearance* out) {
   } else if (key == L"选中文字" || k == L"highlight_text") {
     bool ignored = false;
     ParseColor(value, &out->highlight_fg, &ignored);
+  } else if (key == L"任务栏图标" || k == L"tray_icon") {
+    // 留空当没写 —— 交不出图标，任务栏就退回去显示「简体」，不如保留默认。
+    if (!value.empty()) out->tray_chinese = value.substr(0, 2);
+  } else if (key == L"西文图标" || k == L"tray_icon_western") {
+    if (!value.empty()) out->tray_western = value.substr(0, 2);
   }
   if (out->max_width < out->min_width) out->max_width = out->min_width;
 }

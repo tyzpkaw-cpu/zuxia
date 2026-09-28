@@ -2,7 +2,13 @@
 
 #include <olectl.h>
 
+#include <algorithm>
+#include <cstring>
+#include <string>
+#include <vector>
+
 #include "Diagnostics.h"
+#include "Settings.h"
 #include "TextService.h"
 
 // {3EB28CF1-AB83-4E46-8B78-FFDB28DC129F}
@@ -18,6 +24,105 @@ constexpr wchar_t kChineseText[] = L"中";  // 中
 constexpr wchar_t kWesternText[] = L"西";  // 西
 constexpr wchar_t kChineseTip[] = TEXTSERVICE_DESC L"：中文（轻敲 Shift 切换）";
 constexpr wchar_t kWesternTip[] = TEXTSERVICE_DESC L"：西文（轻敲 Shift 切换）";
+
+// Windows 11 的任务栏输入指示器画的是 GetIcon 交出来的图标，GetText 那一行字
+// 它根本不看。不给图标，它就退回去显示语言缩写 —— 那就是任务栏上那个「简体」
+// 的来历，跟这个输入法叫什么、处于什么模式都没关系。
+//
+// 图标在运行时画，不预先烤两张 .ico 塞进资源：尺寸要跟着 DPI 走，颜色要跟着
+// 系统深浅色走，字还要让用户能在设置文件里改。
+bool SystemUsesLightTheme() {
+  HKEY key = nullptr;
+  DWORD value = 1;  // 读不到就当浅色，配深色字 —— 浅底上至少看得见
+  DWORD size = sizeof(value);
+  DWORD type = REG_DWORD;
+  if (RegOpenKeyExW(
+          HKEY_CURRENT_USER,
+          L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+          0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {
+    RegQueryValueExW(key, L"SystemUsesLightTheme", nullptr, &type,
+                     reinterpret_cast<BYTE*>(&value), &size);
+    RegCloseKey(key);
+  }
+  return value != 0;
+}
+
+HICON RenderGlyphIcon(const std::wstring& glyph) {
+  if (glyph.empty()) return nullptr;
+  int size = GetSystemMetrics(SM_CXSMICON);
+  if (size <= 0) size = 16;
+
+  BITMAPINFO info = {};
+  info.bmiHeader.biSize = sizeof(info.bmiHeader);
+  info.bmiHeader.biWidth = size;
+  info.bmiHeader.biHeight = -size;  // 自上而下，省得翻转
+  info.bmiHeader.biPlanes = 1;
+  info.bmiHeader.biBitCount = 32;
+  info.bmiHeader.biCompression = BI_RGB;
+
+  void* bits = nullptr;
+  HBITMAP color =
+      CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!color || !bits) {
+    if (color) DeleteObject(color);
+    return nullptr;
+  }
+  memset(bits, 0, static_cast<size_t>(size) * static_cast<size_t>(size) * 4);
+
+  HDC dc = CreateCompatibleDC(nullptr);
+  if (!dc) {
+    DeleteObject(color);
+    return nullptr;
+  }
+  HGDIOBJ old_bitmap = SelectObject(dc, color);
+  // ANTIALIASED 而不是 CLEARTYPE：ClearType 的彩色边缘会让下面那步「拿亮度当
+  // 透明度」算出带颜色的毛边。
+  HFONT font = CreateFontW(-MulDiv(size, 7, 8), 0, 0, 0, FW_SEMIBOLD, FALSE,
+                           FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                           CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+                           DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+  HGDIOBJ old_font = font ? SelectObject(dc, font) : nullptr;
+  SetBkMode(dc, TRANSPARENT);
+  // 先一律画白字：白色的亮度正好就是抗锯齿的覆盖率，拿来当 alpha。
+  SetTextColor(dc, RGB(255, 255, 255));
+  RECT box = {0, 0, size, size};
+  DrawTextW(dc, glyph.c_str(), static_cast<int>(glyph.size()), &box,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
+  if (old_font) SelectObject(dc, old_font);
+  if (font) DeleteObject(font);
+  SelectObject(dc, old_bitmap);
+  DeleteDC(dc);
+
+  const bool dark_glyph = SystemUsesLightTheme();
+  auto* pixels = static_cast<unsigned char*>(bits);
+  for (int i = 0; i < size * size; ++i) {
+    unsigned char* p = pixels + static_cast<size_t>(i) * 4;
+    const unsigned char coverage = (std::max)({p[0], p[1], p[2]});
+    const unsigned char value = dark_glyph ? 0 : coverage;
+    p[0] = value;  // 预乘 alpha：深色任务栏上白字，浅色任务栏上黑字
+    p[1] = value;
+    p[2] = value;
+    p[3] = coverage;
+  }
+
+  // 单色掩码全 0 = 处处不透明，真正的透明交给上面的 alpha 通道。
+  // 单色位图每行按 WORD 对齐，缓冲区大小得按这个算。
+  const size_t stride = static_cast<size_t>((size + 15) / 16) * 2;
+  std::vector<unsigned char> mask_bits(stride * static_cast<size_t>(size), 0);
+  HBITMAP mask = CreateBitmap(size, size, 1, 1, mask_bits.data());
+  if (!mask) {
+    DeleteObject(color);
+    return nullptr;
+  }
+  ICONINFO icon_info = {};
+  icon_info.fIcon = TRUE;
+  icon_info.hbmColor = color;
+  icon_info.hbmMask = mask;
+  HICON icon = CreateIconIndirect(&icon_info);
+  DeleteObject(color);
+  DeleteObject(mask);
+  return icon;
+}
 
 }  // namespace
 
@@ -100,9 +205,13 @@ STDAPI CModeButton::OnMenuSelect(UINT /*id*/) { return E_NOTIMPL; }
 
 STDAPI CModeButton::GetIcon(HICON* icon) {
   if (!icon) return E_INVALIDARG;
-  // The button shows text, not an icon; the shell falls back to GetText.
   *icon = nullptr;
-  return S_FALSE;
+  const bool native = !service_ || service_->_IsNativeMode();
+  const zuxia::Appearance look = zuxia::CurrentAppearance();
+  *icon = RenderGlyphIcon(native ? look.tray_chinese : look.tray_western);
+  // 图标的所有权交给调用方，由它 DestroyIcon —— 这是 ITfLangBarItemButton
+  // 的约定，所以每次都画一张新的，不能缓存着重复交出去。
+  return *icon ? S_OK : S_FALSE;
 }
 
 STDAPI CModeButton::GetText(BSTR* text) {
@@ -135,7 +244,10 @@ STDAPI CModeButton::UnadviseSink(DWORD cookie) {
 }
 
 void CModeButton::Refresh() {
-  if (sink_) sink_->OnUpdate(TF_LBI_STATUS | TF_LBI_TEXT | TF_LBI_TOOLTIP);
+  if (sink_) {
+    sink_->OnUpdate(TF_LBI_STATUS | TF_LBI_TEXT | TF_LBI_TOOLTIP |
+                    TF_LBI_ICON);
+  }
 }
 
 // ------------------------------------------------------- mode compartment --

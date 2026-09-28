@@ -30,6 +30,11 @@ struct Appearance {
   COLORREF dim = RGB(128, 128, 128);           // 编码行
   COLORREF highlight_bg = RGB(35, 104, 190);   // 选中项底色
   COLORREF highlight_fg = RGB(255, 255, 255);  // 选中项文字
+
+  // 任务栏输入指示器上那个字。Windows 11 画的是图标，不是文字 —— 不给图标
+  // 它就退回去显示语言缩写「简体」。这两个字会在运行时画成图标。
+  std::wstring tray_chinese = L"足";
+  std::wstring tray_western = L"A";
 };
 
 // 当前设置。第一次调用时读文件；之后每隔至多 500 ms 看一眼文件有没有被改过，
