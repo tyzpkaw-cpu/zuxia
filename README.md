@@ -227,6 +227,11 @@ python data-tools/audit_zuxia.py --regen    # 外加两次重建逐字节比对
 
 # 把应物的结构码逐字抄过来（需要应物仓库，见 §2.7）
 python data-tools/sync_structure.py ../hengma-native/data/hengma.dict.yaml --dry-run
+
+# 列式解码器原型：词库里没有的词也能拼（见 docs/列式解码.md）
+python data-tools/decode_zuxia.py suyaoszcw     # -> 苏瑶
+python data-tools/decode_zuxia.py --selftest    # 11 条固定用例
+python data-tools/decode_zuxia.py --bench       # 2 万词基准
 ```
 
 `audit_zuxia.py` 是改完码表后的第一道闸：它抓到过 52 行带 `#` 注释符的假候选
@@ -316,6 +321,8 @@ pwsh installer/Uninstall-Zuxia.ps1 -PurgeUserData
 | **代码签名** | **未做**——Windows 11 的 Smart App Control 会**拒绝安装**未签名应用，这是「任何设备都能装」的硬前提。流水线已备好：`make-setup.ps1 -Sign` |
 | **ARM64** | 安装器已能正常安装并在 x86 / x64 模拟 / Arm64EC 应用里可用；**ARM64 原生应用不可用**（架构所限）。**原生支持暂不做**（2026-09-27 决定，理由与代价见 [`docs/审计发现.md`](docs/审计发现.md) 第四节） |
 | Win7 / 8.1 | 找不到静态阻断，但**无实测证据**，不列入支持范围 |
+| 词组码位 | **已定案**：全拼串＋逐位结构串＋逐位部件串，与单字规则同构 |
+| 列式解码器 | **Python 原型已通过**（[`docs/列式解码.md`](docs/列式解码.md)）。词库里没有的词纯拼也能出：每字一部件 97.24% 首选，两部件 99.40%；自检 11 项已进 CI。**C++ 版未移植** |
 | 词组词典 | **未开始**——打 `tiandi` 目前一个候选都没有 |
 | 真机输入回归 | **未做**（安装、注销重登、在各应用里打字） |
 
@@ -326,7 +333,8 @@ pwsh installer/Uninstall-Zuxia.ps1 -PurgeUserData
 1. **修 `ZUXIA_COM_GUARD_*` 那条**（约 17 个入口点无异常防护 → 异常逃逸即宿主崩溃、Word 丢文档）。
    这是全部发现里唯一会毁用户数据的，**建议在应物上游先修**再重跑移植脚本
 2. **签名**：买 OV/EV 证书，然后 `make-setup.ps1 -Sign` 一条命令出签名版
-3. **词组词典** —— 目前最影响日常使用的一项
+3. **把列式解码器移植进 `src/RimeEngine.cpp`** —— 原型指标已达标，清单见
+   [`docs/列式解码.md`](docs/列式解码.md) 末节；之后词组表只当排序先验，可以大幅瘦身
 4. **真机装一遍** —— 安装、注销重登，在记事本与浏览器里实际打字；有 ARM64 设备就顺手跑一遍 `scripts/verify-install.ps1`
 
 ---

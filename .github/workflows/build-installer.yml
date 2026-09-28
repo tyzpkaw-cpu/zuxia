@@ -32,6 +32,11 @@ jobs:
       - name: audit_zuxia.py --regen
         run: python data-tools/audit_zuxia.py --regen
 
+      # 列式解码器：词库里没有的词也要能拼出来。11 条用例覆盖单字退化、
+      # 无部件字补位、结构位非法字母必须拒绝。
+      - name: decode_zuxia.py --selftest
+        run: python data-tools/decode_zuxia.py --selftest
+
       - name: 编码质量（留在日志里备查）
         run: python data-tools/measure_zuxia.py data/zuxia.dict.yaml --labels "足下 $(cat VERSION)"
 
