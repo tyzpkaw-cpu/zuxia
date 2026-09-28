@@ -268,8 +268,16 @@ def audit_regen() -> None:
           done.stderr[-300:])
     if done.returncode == 0:
         plain, _ = read_dict(tmp / "zuxia.dict.yaml")
-        check("对照构建确实没有结构码（行数明显更少）",
-              len(plain) < 50000, f"{len(plain)} 行")
+        main, _ = read_dict(ROOT / "data/zuxia.dict.yaml")
+        # 判据要相对，不能钉死行数。别名表一长，两边都会变大；不变的是
+        # 「去掉结构码之后，码更短、行更少」。钉死阈值的话，加别名就会把
+        # 这条断言撞红，而它其实什么问题都没有。
+        plain_max = max(len(r[1]) for r in plain)
+        main_max = max(len(r[1]) for r in main)
+        check("对照构建确实没有结构码（行更少、码更短）",
+              len(plain) < len(main) and plain_max < main_max,
+              f"对照 {len(plain)} 行/最长 {plain_max} 键，"
+              f"正式 {len(main)} 行/最长 {main_max} 键")
     for path in outs + [tmp]:
         shutil.rmtree(path, ignore_errors=True)
 
