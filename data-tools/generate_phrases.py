@@ -30,6 +30,12 @@ import json
 import pathlib
 import sys
 
+# Windows 上 Python 的 stdout 跟着控制台代码页走（GitHub 的 runner 是
+# cp1252），一 print 中文就 UnicodeEncodeError —— 连 --help 都会炸，因为
+# 这个文件的说明文字是中文的。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import generate_zuxia as g
 
@@ -122,15 +128,15 @@ def main() -> int:
     stats = collections.Counter()
     for word, syllables, weight in words:
         if len(syllables) != len(word):
-            stats["拼音位数对不上"] += 1
+            stats["syllable count mismatch"] += 1
             continue
         if any(ch not in structure for ch in word):
-            stats["有字不在字表里"] += 1
+            stats["character not in the char table"] += 1
             continue
         if not all(s.isalpha() and s.isascii() for s in syllables):
-            stats["拼音不是纯字母"] += 1
+            stats["pinyin is not plain letters"] += 1
             continue
-        stats["收录"] += 1
+        stats["encoded"] += 1
         sound = "".join(syllables)
         shape = "".join(structure[ch] for ch in word)
         codes = [sound, sound + shape]
@@ -153,9 +159,9 @@ def main() -> int:
 
     report = {
         "words_considered": len(words),
-        "words_encoded": stats["收录"],
+        "words_encoded": stats["encoded"],
         "rows": len(rows),
-        "skipped": {k: v for k, v in stats.items() if k != "收录"},
+        "skipped": {k: v for k, v in stats.items() if k != "encoded"},
         "bytes": out.stat().st_size,
     }
     print(json.dumps(report, ensure_ascii=False, indent=2))
