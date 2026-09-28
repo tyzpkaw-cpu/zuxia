@@ -59,11 +59,11 @@ IDENTITY = [
     ("衡码", "足下"),
     ("应物输入法", "应物音形足下输入法"),
     # Versions. 应物 ships 0.57-heng and carries two older strings in comments
-    # and in the librime traits; 足下 tracks its scheme's 0.1.0.
-    ("0.57-heng", "0.1.0"),
-    ("0.57.0", "0.1.0"),
-    ("0.3.1-alpha", "0.1.0"),
-    ("0.3.0-alpha", "0.1.0"),
+    # and in the librime traits; 足下 tracks its scheme's 0.2.0.
+    ("0.57-heng", "0.2.0"),
+    ("0.57.0", "0.2.0"),
+    ("0.3.1-alpha", "0.2.0"),
+    ("0.3.0-alpha", "0.2.0"),
 ]
 
 # The `hm` initialism stands for HengMa. The macro prefix, the namespace and
@@ -150,8 +150,10 @@ ANNOTATE_OLD = """  std::wstring comment;
 
 ANNOTATE_NEW = """  // 足下 accepts any two components in either order, so one character can
   // carry many equally complete codes. Show the ones that continue what has
-  // been typed and stop after four, leaving the row readable.
-  constexpr size_t kMaxCodes = 4;
+  // been typed and stop after three, leaving the row readable: a complete
+  // code is now pinyin + structure + two component letters, about seven
+  // characters wide, so four of them would no longer fit.
+  constexpr size_t kMaxCodes = 3;
   std::wstring comment;
   size_t shown = 0;
   for (const std::wstring& code : found->second) {

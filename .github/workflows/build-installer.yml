@@ -1,0 +1,106 @@
+# 出 ZuxiaSetup-<版本>.exe。
+#
+# 这台开发机是 Linux，编译不了 MSVC；windows runner 自带 VS2022、CMake、
+# Windows SDK（rc.exe）、makecab 和 7-Zip，正好补上这一段。librime 由
+# scripts/fetch-librime.ps1 从官方 release 取，SHA-256 在脚本里钉死。
+#
+# 两个 job：先在 Linux 上验码表（快，失败就不用编了），再在 Windows 上
+# 编译、跑引擎断言、打包。产物在 Actions 页面的 Artifacts 里下载。
+name: build-installer
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  data:
+    name: 码表不变量
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # --regen 会重跑两次生成器并逐字节比对，同时验证仓库里的词典就是
+      # 当前源码的产物。码表被手改过、生成器不确定，这一步就会红。
+      - name: audit_zuxia.py --regen
+        run: python data-tools/audit_zuxia.py --regen
+
+      - name: 编码质量（留在日志里备查）
+        run: python data-tools/measure_zuxia.py data/zuxia.dict.yaml --labels "足下 $(cat VERSION)"
+
+  installer:
+    name: 编译与打包
+    needs: data
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 读出版本号
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Get-Content VERSION -Raw).Trim()
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "版本 $v"
+
+      # 仓库里已经带了 third_party/librime/*/dist/lib/rime.dll，脚本会跳过
+      # 下载；万一是浅克隆或将来把它从仓库里拿掉了，这一步兜住。
+      - name: 取 librime 1.17.0
+        shell: pwsh
+        run: pwsh scripts/fetch-librime.ps1
+
+      - name: 编译 x64 + x86
+        shell: pwsh
+        run: pwsh scripts/build.ps1 -Arch all -Configuration Release
+
+      # engine-test 必须在 x64\ 目录里跑：RimeEngine 从自己的模块路径找
+      # rime.dll 和 ..\data，和文本服务运行时的行为一致。
+      - name: 引擎断言（20 项）
+        shell: pwsh
+        run: |
+          pwsh tools/build-engine-test.ps1 -Arch x64
+          Copy-Item tools/engine-test.exe dist/Zuxia/x64/ -Force
+          Push-Location dist/Zuxia/x64
+          .\engine-test.exe
+          if ($LASTEXITCODE -ne 0) { throw "engine-test 有断言没过" }
+          Pop-Location
+
+      - name: 打单文件安装包
+        shell: pwsh
+        run: pwsh installer/setup/make-setup.ps1 -SkipBuild
+
+      - name: 核对载荷清单
+        shell: pwsh
+        run: |
+          Get-Content dist/Zuxia/MANIFEST.sha256 | Measure-Object -Line
+          Get-Content "dist/ZuxiaSetup-$($env:ZX_VERSION).exe.sha256"
+        env:
+          ZX_VERSION: ${{ steps.ver.outputs.version }}
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZuxiaSetup-${{ steps.ver.outputs.version }}
+          path: |
+            dist/ZuxiaSetup-*.exe
+            dist/ZuxiaSetup-*.exe.sha256
+            dist/Zuxia/MANIFEST.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      # 暂存目录本身也留一份：想手工核对某个 DLL 或用
+      # scripts/verify-install.ps1 逐文件比对时用得上。
+      - name: 上传暂存目录
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zuxia-stage-${{ steps.ver.outputs.version }}
+          path: dist/Zuxia
+          if-no-files-found: error
+          retention-days: 7

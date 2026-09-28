@@ -1,5 +1,5 @@
 # Minimal global configuration for the embedded librime runtime.
-config_version: "0.1.0"
+config_version: "0.2.0"
 
 schema_list:
   - schema: zuxia

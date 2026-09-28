@@ -6,6 +6,11 @@ character's own parts rather than by its radical alone:
 
     full pinyin  →  + structure  →  + one component letter  →  + two
 
+The structure key is one of `z` 左右 / `s` 上下 / `b` 包围 / `p` 品字形及兜底
+/ `d` 独体, derived mechanically from the character's IDS. It is weak on its
+own (1.34 bit) but it is orthogonal to the component keys and it costs no
+knowledge: one look tells you whether a character is side-by-side or stacked.
+
 A component's letter is the initial of what people **call** it, so 氵 is s
 (水) and 宀 is b (宝盖). A component with more than one accepted name yields
 more than one letter, and any two distinct components may be used in either
@@ -34,6 +39,11 @@ NOT_A_COMPONENT = set("？?[]{}()0123456789"
                       "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
                       "abcdefghijklmnopqrstuvwxyz")
 
+# Characters the IDS data decomposes into strokes rather than components. The
+# stroke tree is arbitrary -- it makes 山 look enclosed and 口 look stacked --
+# so the structure key has to be stated by hand for them. This list is the
+# floor, not the ceiling: see load_structure_overrides() for the authoritative
+# map, and docs/方案升级审计.md for why it matters.
 SINGLE_STRUCTURE_OVERRIDES = set(
     "中木本末未米术朱束东车申甲由田王玉井开丰手牛羊生年午果来"
     "夫天大太犬丈支十干于土士工〇"
@@ -72,16 +82,31 @@ def load_ids(path: pathlib.Path) -> dict[str, str]:
 def load_charset(path: pathlib.Path) -> list[tuple[str, str, int]]:
     out: list[tuple[str, str, int]] = []
     started = False
+    skipped = 0
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             if not started:
                 if line.startswith("..."):
                     started = True
                 continue
+            # rime-ice keeps disabled rows in the body as comments, and a few
+            # live rows carry prose instead of a reading ("ng  没启用",
+            # "jing / dan"). Both used to sail straight through: the comment
+            # marker became part of the candidate text, so `nei` offered a
+            # candidate literally rendered「# 那」at weight 9,929,703.
+            if line.startswith("#"):
+                continue
             parts = line.rstrip("\n").split("\t")
             if len(parts) >= 2 and parts[0] and parts[1]:
+                reading = strip_tone(parts[1])
+                if not reading.isascii() or not reading.isalpha():
+                    skipped += 1
+                    continue
                 weight = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
-                out.append((parts[0], strip_tone(parts[1]), weight))
+                out.append((parts[0], reading, weight))
+    if skipped:
+        print(f"skipped {skipped} rows whose reading is not a pinyin syllable",
+              file=sys.stderr)
     return out
 
 
@@ -128,7 +153,48 @@ def parse_ids(text: str):
         return None
 
 
-def classify_structure(node, character: str) -> str:
+def leaves_of(node) -> list[str]:
+    """Every terminal component of a parsed IDS tree, in reading order."""
+    if node is None:
+        return []
+    op, children = node
+    if not children:
+        return [op]
+    out: list[str] = []
+    for child in children:
+        out.extend(leaves_of(child))
+    return out
+
+
+def load_structure_overrides(path: pathlib.Path) -> dict[str, str]:
+    """An authoritative 字→结构码 map, one `字<TAB>码` per line.
+
+    Its reason to exist: the structure key is only worth having if the typist
+    can guess it, and for a character the IDS data splits into strokes the
+    derived key is a coin toss (山 comes out 包围, 口 comes out 上下). It is
+    also the one place where 足下 and 应物 must agree character for character,
+    or the shared rungs stop being shared.
+
+    `data-tools/sync_structure.py` fills this file from 应物's own dictionary.
+    Absent or empty, the generator falls back to the derived key.
+    """
+    out: dict[str, str] = {}
+    if not path or not path.exists():
+        return out
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) == 2 and len(parts[0]) == 1 and parts[1] in set("zsbpd"):
+            out[parts[0]] = parts[1]
+    return out
+
+
+def classify_structure(node, character: str,
+                       overrides: dict[str, str] | None = None) -> str:
+    if overrides and character in overrides:
+        return overrides[character]
     if character in SINGLE_STRUCTURE_OVERRIDES:
         return "d"
     if node is None:
@@ -138,6 +204,14 @@ def classify_structure(node, character: str) -> str:
     op, children = node
     if not children:
         return "d"
+    # 三叠式 (品 森 晶 众 磊) reads as a shape of its own, not as 上下: the
+    # typist sees three of the same part, not a stack. 应物 puts it in the
+    # catch-all and 足下 must agree, or every such character would take a
+    # different structure key in the two products and the codes a typist
+    # already knows would stop working.
+    leaves = leaves_of(node)
+    if len(leaves) == 3 and len(set(leaves)) == 1:
+        return "p"
     if op in {"⿰", "⿲"}:
         return "z"
     if op in {"⿱", "⿳"}:
@@ -220,17 +294,31 @@ def main() -> int:
                     default=root / "sources/8105.dict.yaml")
     ap.add_argument("--names", type=pathlib.Path,
                     default=root / "sources/component-names.yaml")
+    ap.add_argument("--structure-map", type=pathlib.Path,
+                    default=root / "sources/structure-overrides.tsv",
+                    help="authoritative 字→结构码 map (see sync_structure.py)")
     ap.add_argument("--out-dir", type=pathlib.Path, default=root.parent / "data")
-    ap.add_argument("--version", default="0.1.0")
-    # Measured: at five keys, pinyin + two component letters reaches the
-    # target first 94.67% of the time, against 94.21% for pinyin + structure
-    # + radical -- the same accuracy without needing to know which part is
-    # the radical or what it is called. Adding the structure key on top costs
-    # a keystroke and buys 2.13 points, so it is off by default. It cannot be
-    # optional per-character: `qingz` would then be ambiguous between the
-    # structure z and a component named 竹/足/走.
-    ap.add_argument("--structure", action="store_true",
-                    help="insert the structure key between sound and form")
+    ap.add_argument("--version", default="0.2.0")
+    # The structure key sits between sound and form and is always present.
+    #
+    # Measured on this table, weighted by character frequency, per (code,
+    # character) pair -- the same estimator 应物 publishes:
+    #
+    #     without structure   full code 5.02 keys, target first 97.04%,
+    #                         2.96% still need picking, 44,561 rows
+    #     with structure      full code 6.02 keys, target first 98.27%,
+    #                         1.73% still need picking, 53,310 rows
+    #
+    # One more keystroke per character (0.603 -> 0.779 added keys on the
+    # "keep adding until it is first" measure) roughly halves the picking.
+    #
+    # Its position is fixed rather than optional, and that is what keeps the
+    # ladder unambiguous: `qingz` can only be 清's structure key, never a
+    # component named 竹/足/走. It also keeps every code a 应物 typist already
+    # knows: 清 qingzs, 情 qingzx, 应 yingbg are all still valid rungs here.
+    ap.add_argument("--no-structure", dest="structure", action="store_false",
+                    help="drop the structure key (comparison build only)")
+    ap.set_defaults(structure=True)
     ap.add_argument("--report", type=pathlib.Path)
     args = ap.parse_args()
 
@@ -238,6 +326,7 @@ def main() -> int:
     ids = load_ids(args.cjkvi_ids)
     names = load_names(args.names)
     charset = load_charset(args.charset)
+    overrides = load_structure_overrides(args.structure_map)
 
     rows: dict[tuple[str, str], int] = {}
     stats = collections.Counter()
@@ -246,7 +335,7 @@ def main() -> int:
 
     for char, pinyin, weight in charset:
         source = (hanzi.get(char) or {}).get("decomposition") or ids.get(char, "")
-        structure = classify_structure(parse_ids(source), char)
+        structure = classify_structure(parse_ids(source), char, overrides)
         stats[f"structure_{structure}"] += 1
 
         parts = components_of(char, hanzi, ids)
@@ -291,6 +380,8 @@ def main() -> int:
         "components_without_a_name": len(unnamed),
         "components_without_a_name_top": unnamed.most_common(20),
         "use_structure_key": args.structure,
+        "structure_overrides_applied": len(
+            {c for c, _, _ in charset} & set(overrides)),
     }
     text = json.dumps(report, ensure_ascii=False, indent=2)
     # The console may be on a legacy code page; the report is UTF-8 regardless.

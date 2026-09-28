@@ -1,19 +1,20 @@
 {
-  "characters": 8783,
-  "rows": 44579,
-  "codes_per_character_avg": 5.08,
-  "codes_per_character_max": 33,
+  "characters": 8757,
+  "rows": 53310,
+  "codes_per_character_avg": 6.09,
+  "codes_per_character_max": 34,
   "structure": {
     "b": 728,
-    "p": 195,
     "z": 5814,
-    "s": 1996,
+    "p": 182,
+    "s": 1983,
     "d": 50
   },
   "two_or_more_components": 8482,
   "one_component": 241,
-  "no_component": 60,
+  "no_component": 34,
   "components_without_a_name": 0,
   "components_without_a_name_top": [],
-  "use_structure_key": false
+  "use_structure_key": true,
+  "structure_overrides_applied": 0
 }

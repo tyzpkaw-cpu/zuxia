@@ -163,8 +163,10 @@ void RimeEngine::AnnotateCode(const std::wstring& typed, Candidate* candidate) {
 
   // 足下 accepts any two components in either order, so one character can
   // carry many equally complete codes. Show the ones that continue what has
-  // been typed and stop after four, leaving the row readable.
-  constexpr size_t kMaxCodes = 4;
+  // been typed and stop after three, leaving the row readable: a complete
+  // code is now pinyin + structure + two component letters, about seven
+  // characters wide, so four of them would no longer fit.
+  constexpr size_t kMaxCodes = 3;
   std::wstring comment;
   size_t shown = 0;
   for (const std::wstring& code : found->second) {
@@ -323,7 +325,7 @@ bool RimeEngine::InitializeRuntime(HMODULE module) {
   traits.user_data_dir = user_data_utf8_.c_str();
   traits.distribution_name = "Zuxia IME";
   traits.distribution_code_name = "zuxia";
-  traits.distribution_version = "0.1.0";
+  traits.distribution_version = "0.2.0";
   traits.app_name = "rime.zuxia";
   traits.min_log_level = 2;
   traits.log_dir = "";

@@ -88,35 +88,40 @@ int main() {
 
   printf("candidates with their complete code:\n");
   Case(&engine, "qing", 5);
-  Case(&engine, "qings", 5);
-  Case(&engine, "qingq", 5);
-  Case(&engine, "qingsq", 5);
+  Case(&engine, "qingz", 5);
+  Case(&engine, "qingzs", 5);
+  Case(&engine, "qingzq", 5);
+  Case(&engine, "qingzsq", 5);
   Case(&engine, "zi", 5);
-  Case(&engine, "zibz", 5);
+  Case(&engine, "zisbz", 5);
   Case(&engine, "hang", 5);
   Case(&engine, "xing", 5);
   Case(&engine, "tiandi", 5);
 
   printf("\nchecks:\n");
-  // 清 = 氵(水 s) + 青(q). Both component orders are legal, so it has two
-  // complete codes; the annotation shows whichever ones the typed prefix
-  // still admits.
-  Expect("清 under `qings` is annotated qingsq alone",
-         CommentOf(&engine, "qings", L"清") == L"qingsq");
-  Expect("清 under `qingq` is annotated qingqs alone",
-         CommentOf(&engine, "qingq", L"清") == L"qingqs");
+  // 清 = 氵(水 s) + 青(q), 左右 structure (z), so the full code is
+  // qing + z + two component letters. Both component orders are legal, so it
+  // has two complete codes; the annotation shows whichever ones the typed
+  // prefix still admits.
+  Expect("清 under `qingzs` is annotated qingzsq alone",
+         CommentOf(&engine, "qingzs", L"清") == L"qingzsq");
+  Expect("清 under `qingzq` is annotated qingzqs alone",
+         CommentOf(&engine, "qingzq", L"清") == L"qingzqs");
   Expect("清 under bare `qing` shows both complete codes",
-         CommentOf(&engine, "qing", L"清") == L"qingqs qingsq");
-  // 字 = 宀(宝盖 b) + 子(z).
-  Expect("字 under `zib` is annotated zibz alone",
-         CommentOf(&engine, "zib", L"字") == L"zibz");
+         CommentOf(&engine, "qing", L"清") == L"qingzqs qingzsq");
+  // The structure key alone already narrows things down.
+  Expect("清 survives the structure key `qingz`",
+         CommentOf(&engine, "qingz", L"清") == L"qingzqs qingzsq");
+  // 字 = 宀(宝盖 b) + 子(z), 上下 structure (s).
+  Expect("字 under `zisb` is annotated zisbz alone",
+         CommentOf(&engine, "zisb", L"字") == L"zisbz");
   // 行 has three readings; only the one being typed should show, and each
   // reading carries three complete codes (any two of 彳/一/亍 in either
   // order) -- which is exactly why the annotation is capped.
   Expect("行 under `hang` shows only its hang codes",
-         CommentOf(&engine, "hang", L"行") == L"hangcc hangcs hangsc");
+         CommentOf(&engine, "hang", L"行") == L"hangzcc hangzcs hangzsc");
   Expect("行 under `xing` shows only its xing codes",
-         CommentOf(&engine, "xing", L"行") == L"xingcc xingcs xingsc");
+         CommentOf(&engine, "xing", L"行") == L"xingzcc xingzcs xingzsc");
 
   // Chinese text wants Chinese marks. The engine is handed the plain ASCII
   // character; librime's punctuator is what turns it into the full-width form.
@@ -150,7 +155,7 @@ int main() {
   Expect("back in Chinese mode", !engine.IsAsciiMode());
   engine.Clear();
   Expect("Chinese mode still produces candidates",
-         !CommentOf(&engine, "qings", L"清").empty());
+         !CommentOf(&engine, "qingzs", L"清").empty());
 
   printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ALL CHECKS PASSED",
          failures, failures == 1 ? "" : "s");

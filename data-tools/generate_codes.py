@@ -4,11 +4,13 @@
 The text service reads this file directly and writes each candidate's own
 code into the candidate window. It cannot reuse the runtime `zuxia` dictionary
 for that, because that dictionary deliberately contains every accepted code of
-every character -- the full pinyin, the pinyin plus one component, the pinyin
+every character -- the full pinyin, plus the structure key, plus one component,
 plus two. The annotation should show the finished form, not the partial ones:
 
-    清  qing / qings / qingq / qingsq / qingqs  ->  qingsq qingqs
-    字  zi / zib / ziz / zibz / zizb            ->  zibz zizb
+    清  qing / qingz / qingzs / qingzq / qingzsq / qingzqs
+          ->  qingzsq qingzqs
+    字  zi / zis / zisb / zisz / zisbz / ziszb
+          ->  zisbz ziszb
 
 Only codes that are not a prefix of another code survive, so what is left is
 one group of complete codes per reading.
@@ -95,7 +97,7 @@ def main() -> int:
                         type=pathlib.Path)
     parser.add_argument("--output", default="data/zuxia_char_codes.dict.yaml",
                         type=pathlib.Path)
-    parser.add_argument("--version", default="0.1.0")
+    parser.add_argument("--version", default="0.2.0")
     args = parser.parse_args()
 
     if not args.source.exists():
