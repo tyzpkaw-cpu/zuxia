@@ -39,6 +39,7 @@ set(ZUXIA_SOURCES
   src/Register.cpp
   src/RimeEngine.cpp
   src/Server.cpp
+  src/Settings.cpp
   src/TextEditSink.cpp
   src/TextService.cpp
   src/ThreadMgrEventSink.cpp

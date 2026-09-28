@@ -8,10 +8,6 @@ INIT_ONCE CCandidateWindow::init_once_ = INIT_ONCE_STATIC_INIT;
 
 namespace {
 constexpr wchar_t kWindowClass[] = L"ZuxiaIMECandidateWindow";
-constexpr int kPadding = 8;
-constexpr int kRowHeight = 30;
-constexpr int kMinWidth = 220;
-constexpr int kMaxWidth = 720;
 }
 
 CCandidateWindow::CCandidateWindow() = default;
@@ -44,16 +40,31 @@ void CCandidateWindow::UninitWindowClass() {
 bool CCandidateWindow::Create() {
   if (hwnd_) return true;
   if (!InitWindowClass()) return false;
+  look_ = zuxia::CurrentAppearance();
   hwnd_ = CreateWindowExW(
       WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kWindowClass,
       L"应物候选", WS_POPUP | WS_BORDER, 0, 0, width_, height_, nullptr,
       nullptr, g_hInst, this);
   if (!hwnd_) return false;
-  font_ = CreateFontW(-Scale(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                      CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-                      L"Microsoft YaHei UI");
+  ApplySettings();
   return true;
+}
+
+void CCandidateWindow::ApplySettings() {
+  look_ = zuxia::CurrentAppearance();
+  if (font_ && font_in_use_ == look_.font &&
+      font_size_in_use_ == look_.font_size) {
+    return;
+  }
+  HFONT created = CreateFontW(
+      -Scale(look_.font_size), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+      CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, look_.font.c_str());
+  if (!created) return;  // 字体名打错了也不能让候选窗变成一片空白
+  if (font_) DeleteObject(font_);
+  font_ = created;
+  font_in_use_ = look_.font;
+  font_size_in_use_ = look_.font_size;
 }
 
 void CCandidateWindow::Destroy() {
@@ -105,9 +116,17 @@ bool CCandidateWindow::Visible() const {
   return hwnd_ && IsWindowVisible(hwnd_);
 }
 
+std::wstring CCandidateWindow::RowText(
+    const zuxia::Candidate& candidate) const {
+  std::wstring text = candidate.label + L"  " + candidate.text;
+  if (!candidate.comment.empty()) text += L"  " + candidate.comment;
+  return text;
+}
+
 void CCandidateWindow::Update(
     const std::wstring& preedit,
     const std::vector<zuxia::Candidate>& candidates, int highlighted) {
+  ApplySettings();
   preedit_ = preedit;
   candidates_ = candidates;
   highlighted_ = std::clamp(highlighted, 0,
@@ -121,31 +140,70 @@ void CCandidateWindow::Update(
 }
 
 void CCandidateWindow::RecalculateSize() {
-  const int rows = std::max(1, static_cast<int>(candidates_.size()));
-  height_ = Scale(kPadding * 2 + kRowHeight * rows +
-                  (preedit_.empty() ? 0 : kRowHeight));
-  width_ = Scale(kMinWidth);
+  const int count = static_cast<int>(candidates_.size());
+  const int header = preedit_.empty() ? 0 : 1;
+  item_widths_.clear();
+
+  if (look_.horizontal) {
+    height_ = Scale(look_.padding * 2 + look_.row_height * (1 + header));
+  } else {
+    height_ = Scale(look_.padding * 2 +
+                    look_.row_height * (std::max(1, count) + header));
+  }
+  width_ = Scale(look_.min_width);
   if (!hwnd_) return;
+
   HDC dc = GetDC(hwnd_);
   HFONT old =
       font_ ? reinterpret_cast<HFONT>(SelectObject(dc, font_)) : nullptr;
-  SIZE size = {};
-  auto measure = [&](const std::wstring& text) {
-    if (!text.empty() && GetTextExtentPoint32W(dc, text.c_str(),
-                                               static_cast<int>(text.size()),
-                                               &size)) {
-      width_ = std::max(
-          width_, static_cast<int>(size.cx) + Scale(kPadding * 4 + 44));
+  auto measure = [&](const std::wstring& text) -> int {
+    SIZE size = {};
+    if (text.empty()) return 0;
+    if (!GetTextExtentPoint32W(dc, text.c_str(),
+                               static_cast<int>(text.size()), &size)) {
+      return 0;
     }
+    return static_cast<int>(size.cx);
   };
-  measure(preedit_);
-  for (const auto& candidate : candidates_) {
-    measure(candidate.label + L"  " + candidate.text + L"  " +
-            candidate.comment);
+
+  if (look_.horizontal) {
+    int total = Scale(look_.padding) * 2;
+    for (const auto& candidate : candidates_) {
+      const int item =
+          measure(RowText(candidate)) + Scale(look_.padding) * 2;
+      item_widths_.push_back(item);
+      total += item;
+    }
+    // 编码行单独占一行，它也可能比候选那一行还长。
+    total = std::max(total, measure(preedit_) + Scale(look_.padding) * 4);
+    width_ = std::max(width_, total);
+  } else {
+    auto widen = [&](const std::wstring& text) {
+      const int measured = measure(text);
+      if (measured > 0) {
+        width_ = std::max(width_,
+                          measured + Scale(look_.padding * 4 + 44));
+      }
+    };
+    widen(preedit_);
+    for (const auto& candidate : candidates_) widen(RowText(candidate));
   }
-  width_ = std::min(width_, Scale(kMaxWidth));
+
+  width_ = std::min(width_, Scale(look_.max_width));
   if (old) SelectObject(dc, old);
   ReleaseDC(hwnd_, dc);
+}
+
+COLORREF CCandidateWindow::BackgroundColor() const {
+  return look_.system_background ? GetSysColor(COLOR_WINDOW) : look_.background;
+}
+
+COLORREF CCandidateWindow::TextColor() const {
+  return look_.system_text ? GetSysColor(COLOR_WINDOWTEXT) : look_.text;
+}
+
+COLORREF CCandidateWindow::DimColor() const {
+  return look_.system_dim ? GetSysColor(COLOR_GRAYTEXT) : look_.dim;
 }
 
 void CCandidateWindow::Paint() {
@@ -153,45 +211,84 @@ void CCandidateWindow::Paint() {
   HDC dc = BeginPaint(hwnd_, &ps);
   RECT client = {};
   GetClientRect(hwnd_, &client);
-  FillRect(dc, &client, reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
+  HBRUSH background = CreateSolidBrush(BackgroundColor());
+  if (background) {
+    FillRect(dc, &client, background);
+    DeleteObject(background);
+  }
   SetBkMode(dc, TRANSPARENT);
   HFONT old =
       font_ ? reinterpret_cast<HFONT>(SelectObject(dc, font_)) : nullptr;
 
-  int y = Scale(kPadding);
+  int y = Scale(look_.padding);
   if (!preedit_.empty()) {
-    RECT row = {Scale(kPadding), y, client.right - Scale(kPadding),
-                y + Scale(kRowHeight)};
-    SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT));
+    RECT row = {Scale(look_.padding), y, client.right - Scale(look_.padding),
+                y + Scale(look_.row_height)};
+    SetTextColor(dc, DimColor());
     DrawTextW(dc, preedit_.c_str(), -1, &row,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    y += Scale(kRowHeight);
+    y += Scale(look_.row_height);
   }
 
-  for (int i = 0; i < static_cast<int>(candidates_.size()); ++i) {
-    RECT row = {Scale(kPadding / 2), y, client.right - Scale(kPadding / 2),
-                y + Scale(kRowHeight)};
-    if (i == highlighted_) {
-      HBRUSH brush = CreateSolidBrush(RGB(35, 104, 190));
-      FillRect(dc, &row, brush);
-      DeleteObject(brush);
-      SetTextColor(dc, RGB(255, 255, 255));
-    } else {
-      SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
-    }
-    RECT text_rect = row;
-    text_rect.left += Scale(kPadding);
-    text_rect.right -= Scale(kPadding);
-    const auto& item = candidates_[i];
-    const std::wstring text = item.label + L"  " + item.text +
-                              (item.comment.empty() ? L"" : L"  " + item.comment);
-    DrawTextW(dc, text.c_str(), -1, &text_rect,
-              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    y += Scale(kRowHeight);
+  if (look_.horizontal) {
+    PaintHorizontal(dc, client, y);
+  } else {
+    PaintVertical(dc, client, y);
   }
 
   if (old) SelectObject(dc, old);
   EndPaint(hwnd_, &ps);
+}
+
+void CCandidateWindow::PaintVertical(HDC dc, const RECT& client, int y) {
+  for (int i = 0; i < static_cast<int>(candidates_.size()); ++i) {
+    RECT row = {Scale(look_.padding / 2), y,
+                client.right - Scale(look_.padding / 2),
+                y + Scale(look_.row_height)};
+    if (i == highlighted_) {
+      HBRUSH brush = CreateSolidBrush(look_.highlight_bg);
+      if (brush) {
+        FillRect(dc, &row, brush);
+        DeleteObject(brush);
+      }
+      SetTextColor(dc, look_.highlight_fg);
+    } else {
+      SetTextColor(dc, TextColor());
+    }
+    RECT text_rect = row;
+    text_rect.left += Scale(look_.padding);
+    text_rect.right -= Scale(look_.padding);
+    const std::wstring text = RowText(candidates_[i]);
+    DrawTextW(dc, text.c_str(), -1, &text_rect,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    y += Scale(look_.row_height);
+  }
+}
+
+void CCandidateWindow::PaintHorizontal(HDC dc, const RECT& client, int y) {
+  int x = Scale(look_.padding);
+  for (int i = 0; i < static_cast<int>(candidates_.size()); ++i) {
+    const int item = (i < static_cast<int>(item_widths_.size()))
+                         ? item_widths_[i]
+                         : Scale(look_.padding) * 2;
+    if (x >= client.right) break;  // 放不下的就不画，别画到窗外去
+    RECT row = {x, y, std::min(x + item, static_cast<int>(client.right)),
+                y + Scale(look_.row_height)};
+    if (i == highlighted_) {
+      HBRUSH brush = CreateSolidBrush(look_.highlight_bg);
+      if (brush) {
+        FillRect(dc, &row, brush);
+        DeleteObject(brush);
+      }
+      SetTextColor(dc, look_.highlight_fg);
+    } else {
+      SetTextColor(dc, TextColor());
+    }
+    const std::wstring text = RowText(candidates_[i]);
+    DrawTextW(dc, text.c_str(), -1, &row,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    x += item;
+  }
 }
 
 int CCandidateWindow::Scale(int value) const {
