@@ -14,6 +14,7 @@
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "RimeEngine.h"
 
@@ -73,6 +74,48 @@ std::wstring CommentOf(zuxia::RimeEngine* engine, const char* keys,
   return L"(not found)";
 }
 
+// 注释里的码随部件别名表变化 —— 给 青 加一条「里面看得见月」，清 就从两个
+// 满码变成四个。所以断言不能钉死字面量，否则每加一条别名就要改一次测试，
+// 而它其实什么都没测出来。这里断言的是不随别名改变的两条性质：
+//
+//   1. 注释里的每个码都以已经打出的那几键开头 —— 承诺的码必须真的打得到。
+//      AnnotateCode 在这里出过 bug：`行` 在 hang 下会多出一个 `…`，指向一个
+//      根本不存在的码。
+//   2. 某个明确该在的码确实在。
+std::vector<std::wstring> SplitCodes(const std::wstring& comment) {
+  std::vector<std::wstring> out;
+  std::wstring current;
+  for (wchar_t ch : comment) {
+    if (ch == L' ') {
+      if (!current.empty()) out.push_back(current);
+      current.clear();
+    } else {
+      current.push_back(ch);
+    }
+  }
+  if (!current.empty()) out.push_back(current);
+  return out;
+}
+
+bool EveryCodeStartsWith(const std::wstring& comment, const wchar_t* prefix) {
+  const std::wstring want(prefix);
+  bool saw_one = false;
+  for (const std::wstring& code : SplitCodes(comment)) {
+    if (code == L"\u2026") continue;  // 截断省略号不是码
+    saw_one = true;
+    if (code.size() < want.size()) return false;
+    if (code.compare(0, want.size(), want) != 0) return false;
+  }
+  return saw_one;
+}
+
+bool Mentions(const std::wstring& comment, const wchar_t* code) {
+  for (const std::wstring& one : SplitCodes(comment)) {
+    if (one == code) return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 int main() {
@@ -99,19 +142,21 @@ int main() {
   Case(&engine, "tiandi", 5);
 
   printf("\nchecks:\n");
-  // 清 = 氵(水 s) + 青(q), 左右 structure (z), so the full code is
-  // qing + z + two component letters. Both component orders are legal, so it
-  // has two complete codes; the annotation shows whichever ones the typed
-  // prefix still admits.
-  Expect("清 under `qingzs` is annotated qingzsq alone",
-         CommentOf(&engine, "qingzs", L"清") == L"qingzsq");
-  Expect("清 under `qingzq` is annotated qingzqs alone",
-         CommentOf(&engine, "qingzq", L"清") == L"qingzqs");
-  Expect("清 under bare `qing` shows both complete codes",
-         CommentOf(&engine, "qing", L"清") == L"qingzqs qingzsq");
+  // 清 = 氵(水 s) + 青(q, 另有别名 月 y), 左右 structure (z)。满码是
+  // qing + z + 任意两个部件字母，顺序不限。
+  Expect("清 under `qingzs` only promises codes starting with qingzs",
+         EveryCodeStartsWith(CommentOf(&engine, "qingzs", L"清"), L"qingzs"));
+  Expect("清 under `qingzs` still offers qingzsq",
+         Mentions(CommentOf(&engine, "qingzs", L"清"), L"qingzsq"));
+  Expect("清 under `qingzq` only promises codes starting with qingzq",
+         EveryCodeStartsWith(CommentOf(&engine, "qingzq", L"清"), L"qingzq"));
+  Expect("清 under `qingzq` still offers qingzqs",
+         Mentions(CommentOf(&engine, "qingzq", L"清"), L"qingzqs"));
+  Expect("清 under bare `qing` only promises codes starting with qing",
+         EveryCodeStartsWith(CommentOf(&engine, "qing", L"清"), L"qing"));
   // The structure key alone already narrows things down.
   Expect("清 survives the structure key `qingz`",
-         CommentOf(&engine, "qingz", L"清") == L"qingzqs qingzsq");
+         EveryCodeStartsWith(CommentOf(&engine, "qingz", L"清"), L"qingz"));
   // 字 = 宀(宝盖 b) + 子(z), 上下 structure (s).
   Expect("字 under `zisb` is annotated zisbz alone",
          CommentOf(&engine, "zisb", L"字") == L"zisbz");
@@ -119,9 +164,9 @@ int main() {
   // reading carries three complete codes (any two of 彳/一/亍 in either
   // order) -- which is exactly why the annotation is capped.
   Expect("行 under `hang` shows only its hang codes",
-         CommentOf(&engine, "hang", L"行") == L"hangzcc hangzcs hangzsc");
+         EveryCodeStartsWith(CommentOf(&engine, "hang", L"行"), L"hang"));
   Expect("行 under `xing` shows only its xing codes",
-         CommentOf(&engine, "xing", L"行") == L"xingzcc xingzcs xingzsc");
+         EveryCodeStartsWith(CommentOf(&engine, "xing", L"行"), L"xing"));
 
   // Chinese text wants Chinese marks. The engine is handed the plain ASCII
   // character; librime's punctuator is what turns it into the full-width form.
