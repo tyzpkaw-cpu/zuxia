@@ -234,7 +234,10 @@ def audit_port_script() -> None:
 
 def audit_installer() -> None:
     print("\n安装载荷清单")
-    data = {p.name for p in (ROOT / "data").glob("*.yaml")}
+    # 会随安装包发出去的数据文件：yaml 之外还有生成器产出的解码器 tsv
+    # （CMake 的 install 规则同样按 *.yaml + *.tsv 收录）。
+    data = {p.name for p in (ROOT / "data").glob("*.yaml")} | {
+        p.name for p in (ROOT / "data").glob("*.tsv")}
     for rel, pattern in [("installer/setup/setup.cpp", r'L"\\\\data\\\\([\w.]+)"'),
                          ("installer/Install-Zuxia.ps1", r"'data\\([\w.]+)'")]:
         text = (ROOT / rel).read_text(encoding="utf-8")

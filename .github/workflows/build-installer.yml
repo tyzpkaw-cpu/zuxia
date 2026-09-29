@@ -50,6 +50,14 @@ jobs:
       - name: decode_zuxia.py --selftest
         run: python data-tools/decode_zuxia.py --selftest
 
+      # C++ 侧解码器自检：与上面 Python 自检同用例。用仓库自带的小 Win32
+      # 桩头在 Linux 上直接编 Decoder.cpp，11 条断言全过才放行。
+      - name: C++ 解码器自检（Linux）
+        run: |
+          g++ -std=c++17 -O2 -Itools/linux-selftest -Isrc \
+              -o /tmp/dselftest tools/linux-selftest/decoder-selftest.cpp src/Decoder.cpp
+          /tmp/dselftest
+
       - name: 编码质量（留在日志里备查）
         run: python data-tools/measure_zuxia.py data/zuxia.dict.yaml --labels "足下 $(cat VERSION)"
 

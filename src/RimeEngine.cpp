@@ -36,6 +36,10 @@ bool RimeEngine::runtime_ready_ = false;
 HMODULE RimeEngine::runtime_module_ = nullptr;
 RimeApi* RimeEngine::runtime_api_ = nullptr;
 std::string RimeEngine::shared_data_utf8_;
+std::wstring RimeEngine::shared_data_dir_;
+std::once_flag RimeEngine::decoder_once_;
+ColumnarDecoder RimeEngine::decoder_;
+bool RimeEngine::decoder_ready_ = false;
 std::string RimeEngine::user_data_utf8_;
 std::unordered_map<std::wstring, std::vector<std::wstring>>
     RimeEngine::code_hints_;
@@ -88,10 +92,66 @@ bool RimeEngine::IsComposing() const {
   return composing;
 }
 
+bool RimeEngine::EnsureDecoder() {
+  std::call_once(decoder_once_, []() {
+    if (shared_data_dir_.empty()) return;
+    std::filesystem::path path(shared_data_dir_);
+    path /= L"zuxia.decoder.tsv";
+    decoder_ready_ = decoder_.Load(path.wstring());
+    LogEvent(decoder_ready_ ? L"decoder-loaded" : L"decoder-unavailable",
+             path.wstring());
+  });
+  return decoder_ready_;
+}
+
+// 列式码（全拼串＋逐位结构串＋逐位部件串）Rime 的分词器切不动：结构位和
+// 部件位与它们描述的那个字并不相邻。所以约定很简单 —— Rime 能给出候选就
+// 用 Rime 的，一个都给不出来才让解码器上。词库里没有的人名走的就是这条路。
+void RimeEngine::FillDecodedCandidates(EngineSnapshot* out) {
+  overlay_.clear();
+  if (!out || !out->candidates.empty() || out->preedit.empty()) return;
+  const char* raw = api_->get_input(session_);
+  if (!raw || !*raw) return;
+  const std::string keys(raw);
+  if (keys.size() < 3) return;
+  if (!EnsureDecoder()) return;
+
+  std::vector<std::wstring> words;
+  try {
+    words = decoder_.Decode(keys, 9);
+  } catch (...) {
+    return;
+  }
+  for (size_t i = 0; i < words.size(); ++i) {
+    Candidate one;
+    one.text = words[i];
+    one.label = std::to_wstring(i + 1);
+    out->candidates.push_back(one);
+    overlay_.push_back(words[i]);
+  }
+  if (!overlay_.empty()) out->highlighted = 0;
+}
+
 EngineSnapshot RimeEngine::ProcessKey(int keycode, int modifiers) {
   if (!Ready()) return {};
+  // 解码器交出去的候选 Rime 不知道，选择键得在这里截下来自己落字。
+  if (!overlay_.empty() && modifiers == 0) {
+    int pick = -1;
+    if (keycode >= '1' && keycode <= '9') pick = keycode - '1';
+    else if (keycode == ' ') pick = 0;
+    if (pick >= 0 && static_cast<size_t>(pick) < overlay_.size()) {
+      EngineSnapshot out;
+      out.handled = true;
+      out.commit = overlay_[static_cast<size_t>(pick)];
+      overlay_.clear();
+      api_->clear_composition(session_);
+      return out;
+    }
+  }
   const bool handled = api_->process_key(session_, keycode, modifiers);
-  return ReadSnapshot(handled);
+  EngineSnapshot out = ReadSnapshot(handled);
+  FillDecodedCandidates(&out);
+  return out;
 }
 
 EngineSnapshot RimeEngine::Snapshot() {
@@ -100,6 +160,7 @@ EngineSnapshot RimeEngine::Snapshot() {
 }
 
 void RimeEngine::Clear() {
+  overlay_.clear();
   if (Ready()) api_->clear_composition(session_);
 }
 
@@ -303,6 +364,7 @@ bool RimeEngine::InitializeRuntime(HMODULE module) {
     return false;
   }
   LoadCodeHints(shared.wstring());
+  shared_data_dir_ = shared.wstring();
   std::filesystem::path user(LocalAppDataDirectory());
   user /= L"Zuxia";
   user /= L"Rime";

@@ -37,6 +37,7 @@ set(ZUXIA_SOURCES
   src/KeyEventSink.cpp
   src/KeyHandler.cpp
   src/Register.cpp
+  src/Decoder.cpp
   src/RimeEngine.cpp
   src/Server.cpp
   src/Settings.cpp
@@ -106,8 +107,12 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/zuxia.extended.dict.yaml")
   message(FATAL_ERROR
           "缺 data/zuxia.extended.dict.yaml，先跑：python data-tools/generate_phrases.py")
 endif()
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/zuxia.decoder.tsv")
+  message(FATAL_ERROR
+          "缺 data/zuxia.decoder.tsv，先跑：python data-tools/generate_phrases.py")
+endif()
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/" DESTINATION data
-        FILES_MATCHING PATTERN "*.yaml")
+        FILES_MATCHING PATTERN "*.yaml" PATTERN "*.tsv")
 install(FILES README.md LICENSE-CODE.txt THIRD_PARTY_NOTICES.md
         DESTINATION docs)
 # Nothing else from docs/ ships. Two reasons: the maintainer's notes there

@@ -42,6 +42,7 @@ $sources = @(
     'tools\engine-test.cpp',
     'src\RimeEngine.cpp',
     'src\Diagnostics.cpp',
+    'src\Decoder.cpp',
     'src\Utf.cpp'
 ) | ForEach-Object { Join-Path $Root $_ }
 

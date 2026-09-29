@@ -50,6 +50,7 @@ $required = @(
     (Join-Path $SourceRoot 'data\zuxia.dict.yaml'),
     (Join-Path $SourceRoot 'data\zuxia_char_codes.dict.yaml'),
     (Join-Path $SourceRoot 'data\zuxia.extended.dict.yaml'),
+    (Join-Path $SourceRoot 'data\zuxia.decoder.tsv'),
     (Join-Path $SourceRoot 'x64\ZuxiaSettings.exe')
 )
 foreach ($file in $required) {
