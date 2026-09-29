@@ -211,7 +211,9 @@ def audit_versions() -> None:
     # their own; only our own build inputs have to agree.
     owned = ["CMakeLists.txt", "VERSION", "src", "installer", "data/default.yaml",
              "data/zuxia.schema.yaml", "tools/port_from_yingwu.py"]
-    stale = subprocess.run(["git", "grep", "-l", "0.1.0", "--", *owned],
+    # -F 是按字面找。不加它 git grep 会把 0.1.0 当正则，`.` 通配任意字符 ——
+    # src/Decoder.cpp 里的 0x10000 就会被当成「残留的旧版本号」误报。
+    stale = subprocess.run(["git", "grep", "-l", "-F", "0.1.0", "--", *owned],
                            cwd=ROOT, capture_output=True, text=True).stdout.split()
     check("自有源码里没有残留的旧版本号", not stale, f"{stale}")
 

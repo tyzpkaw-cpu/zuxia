@@ -9,7 +9,10 @@
 //     cd dist\Zuxia\x64
 //     ..\..\..\tools\engine-test.exe
 //
-// 足下 has no phrase dictionary yet, so every case here is a single character.
+// 单字、词组、以及词库里没有的词（由 src/Decoder.cpp 的列式解码器顶上）
+// 三类用例都在这里。解码器的数据是 data/zuxia.decoder.tsv —— 生成物，跑
+// python data-tools/generate_phrases.py 产出，由 cmake --install 拷进
+// dist\Zuxia\data，所以这个测试必须从 dist\Zuxia\x64 里跑。
 #include <windows.h>
 
 #include <cstdio>
@@ -135,6 +138,21 @@ bool OffersLength(zuxia::RimeEngine* engine, const char* keys, size_t len) {
   return false;
 }
 
+// 解码器交出来的候选不经过 AnnotateCode，注释是空的 —— 所以不能像 Offers()
+// 那样借「注释找不找得到」判断在不在，直接按候选文本找。
+bool OffersText(zuxia::RimeEngine* engine, const char* keys,
+                const wchar_t* want_text) {
+  engine->Clear();
+  zuxia::EngineSnapshot snapshot;
+  for (const char* p = keys; *p; ++p) {
+    snapshot = engine->ProcessKey(static_cast<int>(*p), 0);
+  }
+  for (const zuxia::Candidate& candidate : snapshot.candidates) {
+    if (candidate.text == want_text) return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 int main() {
@@ -204,6 +222,15 @@ int main() {
   // 苏瑶 是个人名，rime-ice 的 12 万词里没有。全拼那一档要有东西出来。
   Expect("词表外的 `suyao` 仍拼得出一个两字候选",
          OffersLength(&engine, "suyao", 2));
+
+  // 列式解码器：词表外的词把三档码打满也要能出。走的是「Rime 一个候选都
+  // 给不出来时才上场」那条路，所以这两条同时验了解码本身和 RimeEngine 里
+  // 那段接线；用例与 tools/linux-selftest 的 11 条断言一致。
+  printf("\ncolumnar decoder (out-of-dictionary):\n");
+  Expect("杨志鹏 under `yangzhipengzszmsp` (全拼+结构+部件)",
+         OffersText(&engine, "yangzhipengzszmsp", L"杨志鹏"));
+  Expect("苏瑶 under `suyaoszcw` (全拼+结构+部件)",
+         OffersText(&engine, "suyaoszcw", L"苏瑶"));
 
   // Chinese text wants Chinese marks. The engine is handed the plain ASCII
   // character; librime's punctuator is what turns it into the full-width form.
