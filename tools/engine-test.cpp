@@ -257,6 +257,38 @@ int main() {
     Expect("the next event appends rather than overwrites", after > middle);
   }
 
+  // 回流的端到端检查：从解码候选里选一个，下一次打同一串码它就该排第一。
+  // 记下来的那张表在用户目录下，所以这一段会真的写盘 —— 在 CI 上无所谓，
+  // 在自己机器上跑就等于教了它一条，删掉 zuxia.decoder.user.tsv 即可。
+  printf("\nRecall from decoder picks:\n");
+  const char* kRecallCode = "yangzhipengzszmsp";
+  engine.Clear();
+  zuxia::EngineSnapshot typed;
+  for (const char* p = kRecallCode; *p; ++p) {
+    typed = engine.ProcessKey(static_cast<int>(*p), 0);
+  }
+  Expect("the decoder offers at least three candidates",
+         typed.candidates.size() >= 3);
+  if (typed.candidates.size() >= 3) {
+    const std::wstring third = typed.candidates[2].text;
+    printf("  picking #3: ");
+    Print(third);
+    printf("\n");
+    const zuxia::EngineSnapshot picked = engine.ProcessKey('3', 0);
+    Expect("picking the third candidate commits it", picked.commit == third);
+
+    engine.Clear();
+    zuxia::EngineSnapshot again;
+    for (const char* p = kRecallCode; *p; ++p) {
+      again = engine.ProcessKey(static_cast<int>(*p), 0);
+    }
+    Expect("the pick leads the list next time",
+           !again.candidates.empty() && again.candidates[0].text == third);
+    Expect("the searched candidates are still offered",
+           again.candidates.size() >= 3);
+    engine.Clear();
+  }
+
   // Chinese text wants Chinese marks. The engine is handed the plain ASCII
   // character; librime's punctuator is what turns it into the full-width form.
   printf("\nChinese punctuation:\n");

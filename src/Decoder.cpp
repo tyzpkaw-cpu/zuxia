@@ -112,6 +112,101 @@ bool ReadWholeFile(const std::wstring& path, std::string* out,
 
 }  // namespace
 
+namespace {
+
+// 同一串码最多前置这么多个学过的结果。名额小是故意的：剩下的位置留给
+// beam search，它的顺序一个字都不动。
+constexpr size_t kUserRecall = 3;
+// 用户表最多留这么多行，超了就把最旧的丢掉重写一遍。防的是文件无限长，
+// 不是防误选 —— 误选靠「最近用过的在前」自己纠正。
+constexpr size_t kUserMaxLines = 2000;
+
+// 只认 a-z；分隔符吃掉；别的一概不认 —— 混进一个数字就当整串不是码，
+// 悄悄抹掉它会让 suyaozz9 解成「诉呀哦」，那是无中生有。
+std::string NormalizeKeys(const std::string& raw) {
+  std::string keys;
+  for (char ch : raw) {
+    if (ch >= 'a' && ch <= 'z') {
+      keys.push_back(ch);
+    } else if (ch != '\'' && ch != ' ') {
+      return std::string();
+    }
+  }
+  return keys;
+}
+
+std::string WideToUtf8(const std::wstring& text) {
+  std::string out;
+  for (size_t i = 0; i < text.size(); ++i) {
+    char32_t cp = static_cast<char32_t>(text[i]);
+    // Windows 上 wchar_t 是 16 位，基本区之外的字是一对代理项。
+    if constexpr (sizeof(wchar_t) == 2) {
+      if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < text.size()) {
+        const char32_t low = static_cast<char32_t>(text[i + 1]);
+        if (low >= 0xDC00 && low <= 0xDFFF) {
+          cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+          ++i;
+        }
+      }
+    }
+    if (cp < 0x80) {
+      out.push_back(static_cast<char>(cp));
+    } else if (cp < 0x800) {
+      out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+      out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+      out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+      out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+      out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+      out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+  }
+  return out;
+}
+
+long long FileBytes(const std::wstring& path) {
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return -1;
+  LARGE_INTEGER size = {};
+  const BOOL ok = GetFileSizeEx(file, &size);
+  CloseHandle(file);
+  return ok ? static_cast<long long>(size.QuadPart) : -1;
+}
+
+bool AppendLine(const std::wstring& path, const std::string& line) {
+  // 只申请 FILE_APPEND_DATA。同时申请 FILE_WRITE_DATA 会让它退回普通写语义，
+  // 而新句柄的文件指针在 0 —— 诊断日志就是这么把自己一行行覆写掉的。几个
+  // 宿主进程共写这个文件，单次写远小于一个扇区，追加由文件系统串行化。
+  HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  DWORD written = 0;
+  const BOOL ok = WriteFile(file, line.data(),
+                            static_cast<DWORD>(line.size()), &written, nullptr);
+  CloseHandle(file);
+  return ok != 0;
+}
+
+bool WriteWholeFile(const std::wstring& path, const std::string& bytes) {
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  DWORD written = 0;
+  const BOOL ok = WriteFile(file, bytes.data(),
+                            static_cast<DWORD>(bytes.size()), &written, nullptr);
+  CloseHandle(file);
+  return ok != 0;
+}
+
+}  // namespace
+
 bool ColumnarDecoder::Load(const std::wstring& path, unsigned long* error) {
   ready_ = false;
   std::string text;
@@ -192,21 +287,12 @@ const std::vector<char32_t>* ColumnarDecoder::Lookup(const Cell& cell) const {
   return found == codes_.end() ? nullptr : &found->second;
 }
 
-std::vector<std::wstring> ColumnarDecoder::Decode(const std::string& raw,
+std::vector<std::wstring> ColumnarDecoder::Search(const std::string& raw,
                                                   size_t limit) const {
   std::vector<std::wstring> result;
   if (!ready_ || limit == 0) return result;
 
-  std::string keys;
-  for (char ch : raw) {
-    if (ch >= 'a' && ch <= 'z') {
-      keys.push_back(ch);
-    } else if (ch != '\'' && ch != ' ') {
-      // 分隔符可以吃掉，别的一概不认。混进一个数字就当整串不是码 ——
-      // 悄悄抹掉它会让 suyaozz9 解成「诉呀哦」，那是无中生有。
-      return result;
-    }
-  }
+  const std::string keys = NormalizeKeys(raw);
   if (keys.size() < 2) return result;
 
   // 1) 把前缀切成拼音音节。尾巴长度必须落在 [0, 3 × 字数] 内，否则这串码
@@ -369,6 +455,119 @@ std::vector<std::wstring> ColumnarDecoder::Decode(const std::string& raw,
   for (const auto& one : ranked) {
     if (result.size() >= limit) break;
     result.push_back(CodePointsToWide(one.first));
+  }
+  return result;
+}
+
+void ColumnarDecoder::SetUserTable(const std::wstring& path) {
+  user_path_ = path;
+  user_bytes_ = -1;  // 下一次解码时读一遍
+  user_.clear();
+}
+
+void ColumnarDecoder::MaybeReloadUserTable() {
+  if (user_path_.empty()) return;
+  const long long bytes = FileBytes(user_path_);
+  if (bytes == user_bytes_) return;  // 只追加的文件，长度没变就是没变
+  user_bytes_ = bytes;
+  user_.clear();
+  if (bytes <= 0) return;
+
+  std::string text;
+  if (!ReadWholeFile(user_path_, &text, nullptr)) return;
+
+  size_t lines = 0;
+  size_t begin = 0;
+  while (begin < text.size()) {
+    size_t end = text.find('\n', begin);
+    if (end == std::string::npos) end = text.size();
+    size_t stop = end;
+    if (stop > begin && text[stop - 1] == '\r') --stop;
+    const std::string line = text.substr(begin, stop - begin);
+    begin = end + 1;
+    ++lines;
+
+    const size_t tab = line.find('\t');
+    if (tab == 0 || tab == std::string::npos) continue;
+    const size_t next = line.find('\t', tab + 1);
+    const size_t word_end = (next == std::string::npos) ? line.size() : next;
+    const std::string code = NormalizeKeys(line.substr(0, tab));
+    if (code.size() < 2) continue;
+    const std::vector<char32_t> points =
+        Utf8ToCodePoints(line.substr(tab + 1, word_end - tab - 1));
+    if (points.empty()) continue;
+    const std::wstring word =
+        CodePointsToWide(std::u32string(points.begin(), points.end()));
+    if (word.empty()) continue;
+
+    // 文件是按时间先后追加的，所以从头读到尾、每条都插到最前面，最后得到
+    // 的就是「最近用过的在前」。同一条重复出现只挪位置，不占新名额。
+    std::vector<std::wstring>& learned = user_[code];
+    learned.erase(std::remove(learned.begin(), learned.end(), word),
+                  learned.end());
+    learned.insert(learned.begin(), word);
+    if (learned.size() > kUserRecall) learned.resize(kUserRecall);
+  }
+
+  if (lines <= kUserMaxLines) return;
+  // 超了就把最旧的那些丢掉。内存里那份不用动 —— 每串码本来只留 kUserRecall
+  // 条，丢掉的行只影响下一次重读。
+  size_t drop = lines - kUserMaxLines;
+  size_t at = 0;
+  while (drop > 0) {
+    const size_t end = text.find('\n', at);
+    if (end == std::string::npos) return;
+    at = end + 1;
+    --drop;
+  }
+  if (at < text.size() && WriteWholeFile(user_path_, text.substr(at))) {
+    user_bytes_ = FileBytes(user_path_);
+  }
+}
+
+void ColumnarDecoder::RecordChoice(const std::string& raw,
+                                   const std::wstring& text) {
+  if (user_path_.empty() || text.empty()) return;
+  const std::string code = NormalizeKeys(raw);
+  if (code.size() < 2) return;
+
+  std::string line = code;
+  line += '\t';
+  line += WideToUtf8(text);
+  line += '\n';
+  if (!AppendLine(user_path_, line)) return;
+
+  // 本进程立刻生效，不等下一次重读。同时把记下的长度对上，免得白读一遍。
+  std::vector<std::wstring>& learned = user_[code];
+  learned.erase(std::remove(learned.begin(), learned.end(), text),
+                learned.end());
+  learned.insert(learned.begin(), text);
+  if (learned.size() > kUserRecall) learned.resize(kUserRecall);
+  user_bytes_ = FileBytes(user_path_);
+}
+
+std::vector<std::wstring> ColumnarDecoder::Decode(const std::string& raw,
+                                                  size_t limit) {
+  MaybeReloadUserTable();
+
+  std::vector<std::wstring> result;
+  if (limit == 0) return result;
+
+  const std::string code = NormalizeKeys(raw);
+  if (code.size() >= 2) {
+    const auto learned = user_.find(code);
+    if (learned != user_.end()) {
+      for (const std::wstring& word : learned->second) {
+        if (result.size() >= kUserRecall || result.size() >= limit) break;
+        result.push_back(word);
+      }
+    }
+  }
+
+  for (std::wstring& word : Search(raw, limit)) {
+    if (result.size() >= limit) break;
+    if (std::find(result.begin(), result.end(), word) != result.end()) continue;
+    result.push_back(std::move(word));
   }
   return result;
 }

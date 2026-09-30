@@ -78,7 +78,9 @@ class RimeEngine {
   RimeSessionId session_ = 0;
   bool initialized_ = false;
 
-  static std::once_flag runtime_once_;
+  static std::mutex runtime_mutex_;
+  static bool runtime_tried_;
+  static unsigned long runtime_last_try_;
   static bool runtime_ready_;
   static HMODULE runtime_module_;
   static RimeApi* runtime_api_;
@@ -97,6 +99,8 @@ class RimeEngine {
   // 上一帧交出去的解码候选。它们不在 Rime 眼里，所以数字选择键必须由
   // 这里截下来自己处理。
   std::vector<std::wstring> overlay_;
+  // 产生 overlay_ 的那串码，选中时要连同选中的字一起回流。
+  std::string overlay_code_;
 };
 
 }  // namespace zuxia

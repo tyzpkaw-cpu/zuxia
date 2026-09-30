@@ -35,9 +35,25 @@ static std::string Narrow(const wchar_t* wide) {
   return out;
 }
 
-HANDLE CreateFileW(LPCWSTR name, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE) {
-  FILE* file = std::fopen(Narrow(name).c_str(), "rb");
+HANDLE CreateFileW(LPCWSTR name, DWORD access, DWORD, LPSECURITY_ATTRIBUTES,
+                   DWORD disposition, DWORD, HANDLE) {
+  // 回流表要能追加也要能整体重写，所以这个桩得照 access/disposition 选模式。
+  const char* mode = "rb";
+  if (access & FILE_APPEND_DATA) {
+    mode = "ab";
+  } else if (access & GENERIC_WRITE) {
+    mode = (disposition == CREATE_ALWAYS) ? "wb" : "r+b";
+  }
+  FILE* file = std::fopen(Narrow(name).c_str(), mode);
   return file ? reinterpret_cast<HANDLE>(file) : INVALID_HANDLE_VALUE;
+}
+
+BOOL WriteFile(HANDLE handle, LPCVOID buffer, DWORD to_write, DWORD* written,
+               LPOVERLAPPED) {
+  const size_t put = std::fwrite(buffer, 1, to_write,
+                                 reinterpret_cast<FILE*>(handle));
+  if (written) *written = static_cast<DWORD>(put);
+  return put == static_cast<size_t>(to_write);
 }
 
 BOOL GetFileSizeEx(HANDLE handle, LARGE_INTEGER* size) {
@@ -108,6 +124,119 @@ static void Check(const char* keys, const char* expected_first, int min_count,
   }
 }
 
+
+static void Assert(const char* label, bool ok) {
+  ++checks;
+  std::printf("  %-52s %s\n", label, ok ? "ok" : "FAIL");
+  if (!ok) ++failures;
+}
+
+static std::wstring Wide(const char* utf8) {
+  std::wstring out;
+  const unsigned char* p = reinterpret_cast<const unsigned char*>(utf8);
+  while (*p) {
+    unsigned int cp = *p++;
+    if (cp >= 0xF0) { cp = ((cp & 0x07) << 18); cp |= (*p++ & 0x3F) << 12;
+                      cp |= (*p++ & 0x3F) << 6; cp |= (*p++ & 0x3F); }
+    else if (cp >= 0xE0) { cp = ((cp & 0x0F) << 12); cp |= (*p++ & 0x3F) << 6;
+                           cp |= (*p++ & 0x3F); }
+    else if (cp >= 0xC0) { cp = ((cp & 0x1F) << 6); cp |= (*p++ & 0x3F); }
+    out.push_back(static_cast<wchar_t>(cp));
+  }
+  return out;
+}
+
+static long long SizeOf(const char* path) {
+  FILE* f = std::fopen(path, "rb");
+  if (!f) return -1;
+  std::fseek(f, 0, SEEK_END);
+  const long long n = std::ftell(f);
+  std::fclose(f);
+  return n;
+}
+
+// 回流：选过的结果下次要排在最前，而且顺序只看「最近用过」。
+static void CheckRecall(zuxia::ColumnarDecoder* decoder) {
+  const char* path = "/tmp/zuxia-decoder-user-selftest.tsv";
+  std::remove(path);
+  wchar_t wide[512] = {};
+  for (size_t i = 0; path[i] && i < 511; ++i)
+    wide[i] = static_cast<wchar_t>(static_cast<unsigned char>(path[i]));
+
+  const char* kCode = "yangzhipengzszmsp";
+  const char* kPeng = "\xe6\x9d\xa8\xe5\xbf\x97\xe9\xb9\x8f";  // 杨志鹏
+  const char* kPeng2 = "\xe6\x9d\xa8\xe5\xbf\x97\xe6\xa3\x9a"; // 杨志棚
+  const char* kPeng3 = "\xe6\x9d\xa8\xe5\xbf\x97\xe8\x86\xa8"; // 杨志膨
+
+  std::printf("\nrecall (user table):\n");
+  decoder->SetUserTable(wide);
+
+  // 没有表的时候不能改变任何东西。
+  std::vector<std::wstring> words = decoder->Decode(kCode, 9);
+  Assert("no table yet: beam search order unchanged",
+         !words.empty() && Utf8(words[0]) == kPeng);
+
+  // 选一次就该生效 —— 不是攒够几次才入库。
+  decoder->RecordChoice(kCode, Wide(kPeng2));
+  const long long after_first = SizeOf(path);
+  words = decoder->Decode(kCode, 9);
+  Assert("one pick is enough: it is first next time",
+         !words.empty() && Utf8(words[0]) == kPeng2);
+
+  // 追加必须真的追加。日志就是在这一点上把自己覆写掉的。
+  decoder->RecordChoice(kCode, Wide(kPeng3));
+  const long long after_second = SizeOf(path);
+  Assert("the table grows on the first write", after_first > 0);
+  Assert("a second write appends instead of overwriting",
+         after_second > after_first);
+
+  // 最近用过的在最前，上一次的退到第二 —— 不按次数排，所以一步就能翻回来。
+  words = decoder->Decode(kCode, 9);
+  Assert("most recent pick comes first",
+         !words.empty() && Utf8(words[0]) == kPeng3);
+  Assert("the previous pick is right behind it",
+         words.size() > 1 && Utf8(words[1]) == kPeng2);
+
+  // 前置名额有限，beam search 的结果还在,而且没有重复。
+  bool duplicated = false;
+  for (size_t i = 0; i < words.size(); ++i)
+    for (size_t j = i + 1; j < words.size(); ++j)
+      if (words[i] == words[j]) duplicated = true;
+  Assert("no duplicates between learned and searched", !duplicated);
+  Assert("beam search results are still there", words.size() >= 5);
+
+  // 别的码一点不受影响。
+  const std::vector<std::wstring> other = decoder->Decode("suyaoszcw", 9);
+  Assert("an unrelated code is untouched",
+         !other.empty() && Utf8(other[0]) == "\xe8\x8b\x8f\xe7\x91\xb6");
+
+  // 坏行跳过，不能连坐。
+  FILE* f = std::fopen(path, "ab");
+  if (f) {
+    std::fputs("no-tab-here\n\t\nzz\t\n", f);
+    std::fclose(f);
+  }
+  words = decoder->Decode(kCode, 9);
+  Assert("malformed lines are skipped, learned order survives",
+         !words.empty() && Utf8(words[0]) == kPeng3);
+
+  // 另一个进程追加过,长度变了就该重读 —— 这是跨程序即时生效那条性质。
+  f = std::fopen(path, "ab");
+  if (f) {
+    std::fprintf(f, "%s\t%s\n", kCode, kPeng);
+    std::fclose(f);
+  }
+  words = decoder->Decode(kCode, 9);
+  Assert("a pick made by another process is picked up",
+         !words.empty() && Utf8(words[0]) == kPeng);
+
+  decoder->SetUserTable(std::wstring());
+  std::remove(path);
+  words = decoder->Decode(kCode, 9);
+  Assert("with the table detached, nothing is prepended",
+         !words.empty() && Utf8(words[0]) == kPeng);
+}
+
 int main(int argc, char** argv) {
   const char* path = argc > 1 ? argv[1] : "data/zuxia.decoder.tsv";
   wchar_t wide_path[512] = {};
@@ -130,6 +259,8 @@ int main(int argc, char** argv) {
   Check("rupr", "\xe5\x85\xa5", 1, &decoder);                            // 入
   Check("suyaoxx", "", 0, &decoder);
   Check("suyaozz9", "", 0, &decoder);
+
+  CheckRecall(&decoder);
 
   std::printf("\n%d/%d checks passed\n", checks - failures, checks);
   return failures ? 1 : 0;

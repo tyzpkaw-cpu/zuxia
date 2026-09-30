@@ -31,7 +31,9 @@ constexpr int kXkDelete = 0xffff;
 
 }  // namespace
 
-std::once_flag RimeEngine::runtime_once_;
+std::mutex RimeEngine::runtime_mutex_;
+bool RimeEngine::runtime_tried_ = false;
+unsigned long RimeEngine::runtime_last_try_ = 0;
 bool RimeEngine::runtime_ready_ = false;
 HMODULE RimeEngine::runtime_module_ = nullptr;
 RimeApi* RimeEngine::runtime_api_ = nullptr;
@@ -52,9 +54,22 @@ RimeEngine::~RimeEngine() { Shutdown(); }
 
 bool RimeEngine::Initialize(HMODULE module) {
   if (Ready()) return true;
-  std::call_once(runtime_once_, [this, module]() {
-    runtime_ready_ = InitializeRuntime(module);
-  });
+  // EnsureDecoder 那个坑的双胞胎，而且更狠：这里管的是整个 rime.dll 加载和
+  // 数据目录解析，原来用 std::call_once 包着，而 runtime_ready_ 是进程级静态
+  // 量 —— 一个宿主进程首次初始化失败，它这辈子就再也没有输入法，连重试都不
+  // 会。而首次失败的常见原因恰恰是暂时的：升级时 rime.dll 正被替换。失败要
+  // 能重试，带冷却，免得一个坏安装每次按键都重来一遍。
+  if (!runtime_ready_) {
+    constexpr unsigned long kRetryMs = 30 * 1000;
+    std::lock_guard<std::mutex> guard(runtime_mutex_);
+    if (!runtime_ready_) {
+      const unsigned long now = GetTickCount();
+      if (runtime_tried_ && now - runtime_last_try_ < kRetryMs) return false;
+      runtime_tried_ = true;
+      runtime_last_try_ = now;
+      runtime_ready_ = InitializeRuntime(module);
+    }
+  }
   if (!runtime_ready_) return false;
 
   api_ = runtime_api_;
@@ -116,6 +131,11 @@ bool RimeEngine::EnsureDecoder() {
   unsigned long error = 0;
   decoder_ready_ = decoder_.Load(path.wstring(), &error);
   if (decoder_ready_) {
+    // 回流表。与只读的主表分开，放在用户自己的目录里，升级不会覆盖它。
+    std::filesystem::path learned(LocalAppDataDirectory());
+    learned /= L"Zuxia";
+    learned /= L"zuxia.decoder.user.tsv";
+    decoder_.SetUserTable(learned.wstring());
     LogEvent(L"decoder-loaded", path.wstring());
   } else {
     wchar_t code[24] = {};
@@ -130,6 +150,7 @@ bool RimeEngine::EnsureDecoder() {
 // 用 Rime 的，一个都给不出来才让解码器上。词库里没有的人名走的就是这条路。
 void RimeEngine::FillDecodedCandidates(EngineSnapshot* out) {
   overlay_.clear();
+  overlay_code_.clear();
   if (!out || !out->candidates.empty() || out->preedit.empty()) return;
   const char* raw = api_->get_input(session_);
   if (!raw || !*raw) return;
@@ -150,7 +171,11 @@ void RimeEngine::FillDecodedCandidates(EngineSnapshot* out) {
     out->candidates.push_back(one);
     overlay_.push_back(words[i]);
   }
-  if (!overlay_.empty()) out->highlighted = 0;
+  if (!overlay_.empty()) {
+    out->highlighted = 0;
+    // 选中之后要把这串码和选中的字一起记进回流表，所以码得留到那时候。
+    overlay_code_ = keys;
+  }
 }
 
 EngineSnapshot RimeEngine::ProcessKey(int keycode, int modifiers) {
@@ -164,7 +189,10 @@ EngineSnapshot RimeEngine::ProcessKey(int keycode, int modifiers) {
       EngineSnapshot out;
       out.handled = true;
       out.commit = overlay_[static_cast<size_t>(pick)];
+      // 回流：这是用户在这串码上的选择，记下来，下次同一串码直接前置。
+      decoder_.RecordChoice(overlay_code_, out.commit);
       overlay_.clear();
+      overlay_code_.clear();
       api_->clear_composition(session_);
       return out;
     }
@@ -182,6 +210,7 @@ EngineSnapshot RimeEngine::Snapshot() {
 
 void RimeEngine::Clear() {
   overlay_.clear();
+  overlay_code_.clear();
   if (Ready()) api_->clear_composition(session_);
 }
 

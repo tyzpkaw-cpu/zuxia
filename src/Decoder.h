@@ -32,8 +32,25 @@ class ColumnarDecoder {
 
   // keys 是已经打出的那串原始按键（只认 a-z）。返回最多 limit 个词，
   // 好的在前。拼不出来就返回空。
-  std::vector<std::wstring> Decode(const std::string& keys,
-                                   size_t limit) const;
+  //
+  // 不是 const：会顺手看一眼用户表有没有被别的宿主进程追加过。
+  std::vector<std::wstring> Decode(const std::string& keys, size_t limit);
+
+  // 回流。用户从解码候选里选中过什么，就记在这张小表里，下次同一串码把它
+  // 前置。精确命中，不动 beam search 的顺序 —— 打满档位的确定性不能被学习
+  // 打乱。排序只看最近用过，不计次数：错选一次的代价就是下次选对，一步翻
+  // 回来；而按次数排的话得再选好多次才追得上。
+  //
+  // 表在 %LOCALAPPDATA%\Zuxia\zuxia.decoder.user.tsv，纯文本、只追加，用户
+  // 随时能用记事本打开看，删掉就等于忘掉全部。
+  //
+  // 隐私：这个文件与诊断日志相反 —— 它记录用户打了什么、选了什么。它只留
+  // 在本机，永远不写进 zuxia.log，不参与任何上传。加任何新的写入点之前请
+  // 先读 src/Diagnostics.h 顶上的那段约定。
+  void SetUserTable(const std::wstring& path);
+
+  // 记下一次选择。失败就是学不到，绝不影响这一次输入。
+  void RecordChoice(const std::string& keys, const std::wstring& text);
 
  private:
   struct Cell {
@@ -44,6 +61,10 @@ class ColumnarDecoder {
   };
 
   const std::vector<char32_t>* Lookup(const Cell& cell) const;
+  // 纯 beam search，不掺用户表。Decode 在它外面套一层前置。
+  std::vector<std::wstring> Search(const std::string& keys,
+                                   size_t limit) const;
+  void MaybeReloadUserTable();
 
   std::unordered_map<std::string, std::vector<char32_t>> codes_;
   std::unordered_map<char32_t, double> log_weight_;
@@ -52,6 +73,12 @@ class ColumnarDecoder {
   std::unordered_map<std::string, bool> syllables_;
   size_t max_syllable_ = 0;
   bool ready_ = false;
+
+  // 用户表。只追加，所以「长度没变」就等于「内容没变」，靠这个判断要不要
+  // 重读 —— 于是在别的程序里打过的词，切过来第一次打就已经排在前面。
+  std::wstring user_path_;
+  long long user_bytes_ = -1;
+  std::unordered_map<std::string, std::vector<std::wstring>> user_;
 };
 
 }  // namespace zuxia
