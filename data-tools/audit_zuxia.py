@@ -233,6 +233,14 @@ def audit_port_script() -> None:
         re.findall(r"kMaxCodes = (\d+)", port)
     check("两处的 kMaxCodes 相同", len(set(kmax)) == 1, f"{kmax}")
 
+    # 解码器补位要正好填满候选窗剩下的位置，页大小两边写死一次就得对一次。
+    page = re.search(r"page_size:\s*(\d+)",
+                     (ROOT / "data/zuxia.schema.yaml").read_text(encoding="utf-8"))
+    code = re.search(r"kPageSize = (\d+)", src)
+    check("kPageSize 与 schema 的 page_size 相同",
+          bool(page and code) and page.group(1) == code.group(1),
+          f"schema={page and page.group(1)} src={code and code.group(1)}")
+
 
 def audit_installer() -> None:
     print("\n安装载荷清单")

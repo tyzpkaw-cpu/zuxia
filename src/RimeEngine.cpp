@@ -146,33 +146,61 @@ bool RimeEngine::EnsureDecoder() {
 }
 
 // 列式码（全拼串＋逐位结构串＋逐位部件串）Rime 的分词器切不动：结构位和
-// 部件位与它们描述的那个字并不相邻。所以约定很简单 —— Rime 能给出候选就
-// 用 Rime 的，一个都给不出来才让解码器上。词库里没有的人名走的就是这条路。
+// 部件位与它们描述的那个字并不相邻，所以解码器必须自己出候选。
+//
+// 它原先只在 Rime 一个候选都给不出来时才上场。那个门槛定错了 —— Rime 给出
+// 候选不等于给对。打 woxiangwen 它只能靠补全凑出「我想问问 ~wen」，打
+// xuancibz 它读成「选＋疵」；两次都有候选，两次都不是要的词，而解码器把
+// 「我想问」排在第一位。有候选就闭嘴，等于把解码器锁死在最需要它的场合外。
+//
+// 现在改成补位：Rime 的候选原样排在前面，解码器填这一页剩下的空位。打得准
+// 的时候第一位一个字不动，打到词库覆盖不到的地方，第二第三位就有救。
 void RimeEngine::FillDecodedCandidates(EngineSnapshot* out) {
+  // 候选窗一页放几条。必须与 data/zuxia.schema.yaml 的 menu/page_size 相同，
+  // 否则补位要么填不满要么溢出一页；data-tools/audit_zuxia.py 逐版核对。
+  constexpr size_t kPageSize = 9;
   overlay_.clear();
   overlay_code_.clear();
-  if (!out || !out->candidates.empty() || out->preedit.empty()) return;
+  overlay_base_ = 0;
+  if (!out || out->preedit.empty()) return;
+  // 翻过页之后这一页整页都是 Rime 的，补位只发生在第一页。
+  if (out->page_no != 0) return;
+  const size_t taken = out->candidates.size();
+  if (taken >= kPageSize) return;
   const char* raw = api_->get_input(session_);
   if (!raw || !*raw) return;
   const std::string keys(raw);
   if (keys.size() < 3) return;
   if (!EnsureDecoder()) return;
 
+  const size_t room = kPageSize - taken;
   std::vector<std::wstring> words;
   try {
-    words = decoder_.Decode(keys, 9);
+    // 多要一些：与 Rime 重复的要丢掉，丢完还得填得满。
+    words = decoder_.Decode(keys, room + taken);
   } catch (...) {
     return;
   }
-  for (size_t i = 0; i < words.size(); ++i) {
+  for (const std::wstring& word : words) {
+    if (overlay_.size() >= room) break;
+    bool duplicate = false;
+    for (const Candidate& shown : out->candidates) {
+      if (shown.text == word) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (duplicate) continue;
     Candidate one;
-    one.text = words[i];
-    one.label = std::to_wstring(i + 1);
+    one.text = word;
+    one.label = std::to_wstring(taken + overlay_.size() + 1);
     out->candidates.push_back(one);
-    overlay_.push_back(words[i]);
+    overlay_.push_back(word);
   }
   if (!overlay_.empty()) {
-    out->highlighted = 0;
+    overlay_base_ = taken;
+    // Rime 一个都没给时解码器的第一条就是首选；否则高亮归 Rime。
+    if (taken == 0) out->highlighted = 0;
     // 选中之后要把这串码和选中的字一起记进回流表，所以码得留到那时候。
     overlay_code_ = keys;
   }
@@ -180,19 +208,24 @@ void RimeEngine::FillDecodedCandidates(EngineSnapshot* out) {
 
 EngineSnapshot RimeEngine::ProcessKey(int keycode, int modifiers) {
   if (!Ready()) return {};
-  // 解码器交出去的候选 Rime 不知道，选择键得在这里截下来自己落字。
+  // 解码器交出去的候选 Rime 不知道，选择键得在这里截下来自己落字。落在
+  // overlay_base_ 之前的下标是 Rime 的候选，必须原样放过去。
   if (!overlay_.empty() && modifiers == 0) {
     int pick = -1;
     if (keycode >= '1' && keycode <= '9') pick = keycode - '1';
-    else if (keycode == ' ') pick = 0;
-    if (pick >= 0 && static_cast<size_t>(pick) < overlay_.size()) {
+    // 空格落的是高亮那条。Rime 有候选时高亮是它的，空格就该归它。
+    else if (keycode == ' ' && overlay_base_ == 0) pick = 0;
+    const size_t base = overlay_base_;
+    if (pick >= 0 && static_cast<size_t>(pick) >= base &&
+        static_cast<size_t>(pick) - base < overlay_.size()) {
       EngineSnapshot out;
       out.handled = true;
-      out.commit = overlay_[static_cast<size_t>(pick)];
+      out.commit = overlay_[static_cast<size_t>(pick) - base];
       // 回流：这是用户在这串码上的选择，记下来，下次同一串码直接前置。
       decoder_.RecordChoice(overlay_code_, out.commit);
       overlay_.clear();
       overlay_code_.clear();
+      overlay_base_ = 0;
       api_->clear_composition(session_);
       return out;
     }
@@ -211,6 +244,7 @@ EngineSnapshot RimeEngine::Snapshot() {
 void RimeEngine::Clear() {
   overlay_.clear();
   overlay_code_.clear();
+  overlay_base_ = 0;
   if (Ready()) api_->clear_composition(session_);
 }
 

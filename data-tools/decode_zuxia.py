@@ -320,11 +320,11 @@ def bench(index: Index, phrases: dict[str, int], bigram, levels: int,
 SELFTEST = [
     ("qingzs", "清"),          # n=1 退化成现有单字码
     ("yingbg", "应"),          # 与应物共用的梯级，必须还在
-    ("rup", "入"),             # 无部件字：只有拼音＋结构
-    ("rupr", "入"),            # 无部件字的部件位用自己名字的首字母
+    ("rud", "入"),             # 无部件字：只有拼音＋结构（入是独体字）
+    ("rudr", "入"),            # 无部件字的部件位用自己名字的首字母
     ("suyaoszcw", "苏瑶"),     # 两字，每字一个部件
     ("suyaoszcwby", "苏瑶"),   # 两字，每字两个部件
-    ("zuxiassk", "足下"),
+    ("zuxiasdk", "足下"),   # 下 是独体字（GF 0013-2009），结构位 d
     ("yangzhipengzszmsp", "杨志鹏"),      # 三字，人名，词库里没有
     ("yangzhipengzszmspyxn", "杨志鹏"),
 ]

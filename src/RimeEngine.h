@@ -99,6 +99,9 @@ class RimeEngine {
   // 上一帧交出去的解码候选。它们不在 Rime 眼里，所以数字选择键必须由
   // 这里截下来自己处理。
   std::vector<std::wstring> overlay_;
+  // overlay_[0] 在整个候选列表里的下标。Rime 的候选排在它前面，那些键
+  // 必须原样放给 Rime。
+  size_t overlay_base_ = 0;
   // 产生 overlay_ 的那串码，选中时要连同选中的字一起回流。
   std::string overlay_code_;
 };

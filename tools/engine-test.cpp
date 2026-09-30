@@ -241,6 +241,36 @@ int main() {
   Expect("苏瑶 under `suyaoszcw` (全拼+结构+部件)",
          OffersText(&engine, "suyaoszcw", L"苏瑶"));
 
+  // 补位。解码器原先只在 Rime 交白卷时才上场，那个门槛定错了：打
+  // woxiangwen，Rime 靠补全凑出一个「我想问问 ~wen」，于是解码器闭嘴 ——
+  // 而它把「我想问」排在第一。这一段钉住改好之后的三条约定：Rime 的候选
+  // 原位不动，解码器只填后面的空位，按序号选中的是那个序号上的候选而不是
+  // 差一位的另一个。最后一条是这次改动唯一真正危险的地方。
+  printf("\nDecoder fills the rest of the page:\n");
+  Expect("我想问 is offered although Rime already answered",
+         OffersText(&engine, "woxiangwen", L"我想问"));
+
+  engine.Clear();
+  zuxia::EngineSnapshot mixed;
+  for (const char* p = "woxiangwen"; *p; ++p) {
+    mixed = engine.ProcessKey(static_cast<int>(*p), 0);
+  }
+  Expect("the page does not overflow", mixed.candidates.size() <= 9);
+  Expect("Rime keeps the first slot",
+         !mixed.candidates.empty() && mixed.candidates[0].text != L"我想问");
+  if (mixed.candidates.size() >= 2) {
+    const size_t last = mixed.candidates.size() - 1;
+    const std::wstring want = mixed.candidates[last].text;
+    printf("  picking #%zu: ", last + 1);
+    Print(want);
+    printf("\n");
+    const zuxia::EngineSnapshot picked =
+        engine.ProcessKey(static_cast<int>('1' + last), 0);
+    Expect("a number key commits the candidate carrying that number",
+           picked.commit == want);
+  }
+  engine.Clear();
+
   // 这一段防的是一个真发生过的回归：日志每行都从文件第 0 字节写起，互相
   // 覆盖，文件长度只等于最长那一行，内容是好几行的碎片 —— 看上去还像份
   // 日志，于是排查真机故障时全靠它，而它在骗人。

@@ -250,13 +250,17 @@ int main(int argc, char** argv) {
 
   Check("suyaoszcw", "\xe8\x8b\x8f\xe7\x91\xb6", 3, &decoder);          // 苏瑶
   Check("suyaoszcwby", "\xe8\x8b\x8f\xe7\x91\xb6", 1, &decoder);        // 苏瑶
-  Check("zuxiassk", "\xe8\xb6\xb3\xe4\xb8\x8b", 3, &decoder);           // 足下
+  // 下 是独体字（GF 0013-2009），结构位是 d 不是 s。改对之后这一档只剩一个
+  // 答案 —— 独体比上下窄得多 —— 所以这里要的是 1 不是 3。上一档还是满的。
+  Check("zuxiasd", "\xe8\xb6\xb3\xe4\xb8\x8b", 3, &decoder);            // 足下
+  Check("zuxiasdk", "\xe8\xb6\xb3\xe4\xb8\x8b", 1, &decoder);           // 足下
   Check("yangzhipengzszmsp", "\xe6\x9d\xa8\xe5\xbf\x97\xe9\xb9\x8f", 3, &decoder);   // 杨志鹏
   Check("yangzhipengzszmspyxn", "\xe6\x9d\xa8\xe5\xbf\x97\xe9\xb9\x8f", 3, &decoder); // 杨志鹏
   Check("qingzs", "\xe6\xb8\x85", 1, &decoder);                          // 清
   Check("yingbg", "\xe5\xba\x94", 1, &decoder);                          // 应
-  Check("rup", "\xe5\x85\xa5", 1, &decoder);                             // 入
-  Check("rupr", "\xe5\x85\xa5", 1, &decoder);                            // 入
+  // 入 同样是独体字；它以前落在兜底档 p，是那 214 个错判之一。
+  Check("rud", "\xe5\x85\xa5", 1, &decoder);                             // 入
+  Check("rudr", "\xe5\x85\xa5", 1, &decoder);                            // 入
   Check("suyaoxx", "", 0, &decoder);
   Check("suyaozz9", "", 0, &decoder);
 
