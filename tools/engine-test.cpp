@@ -313,6 +313,41 @@ int main() {
   }
   engine.Clear();
 
+  // 组字中的控制键：这一段不是在修什么，是把现在的行为钉死，免得哪天无声
+  // 改掉。外部复审实测指出回车走的是 librime 的 express_editor —— 它把原始
+  // 码串当文本落进文档（微软拼音、搜狗都是这个行为），Esc 只清组字。两者
+  // 都被我们吃掉，所以组字期间换行和 Esc 到不了应用。这是行为取舍，不是
+  // 缺陷，但必须有断言看着。
+  printf("\nControl keys while composing (pinned, not fixed):\n");
+  engine.Clear();
+  for (const char* p = "suyao"; *p; ++p) engine.ProcessKey(static_cast<int>(*p), 0);
+  const std::string raw_for_return = engine.RawInput();
+  const zuxia::EngineSnapshot on_return = engine.ProcessKey(0xff0d, 0);  // XK_Return
+  Expect("Return while composing is handled by the engine", on_return.handled);
+  Expect("Return commits the raw code string as text",
+         on_return.commit == std::wstring(raw_for_return.begin(),
+                                          raw_for_return.end()));
+  Expect("nothing is left composing after Return", !on_return.composing);
+  engine.Clear();
+
+  for (const char* p = "suyao"; *p; ++p) engine.ProcessKey(static_cast<int>(*p), 0);
+  const zuxia::EngineSnapshot on_escape = engine.ProcessKey(0xff1b, 0);  // XK_Escape
+  Expect("Escape while composing is handled by the engine", on_escape.handled);
+  Expect("Escape commits nothing", on_escape.commit.empty());
+  Expect("Escape leaves nothing composing", !on_escape.composing);
+  engine.Clear();
+
+  // 小键盘的选字键。VirtualKeyToRimeKey 要把 VK_NUMPAD0..9 映成 '0'..'9'，
+  // 不然小键盘按 3 会把「3」原样插进文档，还把已经打进去的码顶掉。
+  printf("\nNumpad digits map to selection keys:\n");
+  bool numpad_ok = true;
+  for (int i = 0; i <= 9; ++i) {
+    if (zuxia::RimeEngine::VirtualKeyToRimeKey(VK_NUMPAD0 + i) != '0' + i) {
+      numpad_ok = false;
+    }
+  }
+  Expect("VK_NUMPAD0..9 map to '0'..'9'", numpad_ok);
+
   // 这一段防的是一个真发生过的回归：日志每行都从文件第 0 字节写起，互相
   // 覆盖，文件长度只等于最长那一行，内容是好几行的碎片 —— 看上去还像份
   // 日志，于是排查真机故障时全靠它，而它在骗人。

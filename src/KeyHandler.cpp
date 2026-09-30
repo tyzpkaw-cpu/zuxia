@@ -195,6 +195,20 @@ HRESULT CTextService::_CommitText(TfEditCookie cookie, ITfContext* context,
         context->SetSelection(cookie, 1, &selection);
       }
       range->Release();
+    } else if (SUCCEEDED(result)) {
+      result = E_FAIL;  // GetRange 报成功却没给出范围
+    }
+    if (FAILED(result)) {
+      // 落字没写进去。这时候还无条件结束组字，留在文档里的就是组字范围里
+      // 原来那串码（preedit），用户选的词彻底没了，屏幕上反而多出一串字母。
+      // 所以失败就把组字范围清空再收 —— 宁可这一下什么都没打出来，也不能
+      // 把一串拉丁字母留在人家文档里。
+      static LONG commit_failed = 0;
+      if (WithinLogBudget(&commit_failed, 8)) {
+        zuxia::LogFailure(L"commit-failed", static_cast<unsigned long>(result));
+      }
+      _CancelComposition(cookie, context);
+      return result;
     }
     _TerminateComposition(cookie, context);
     return result;

@@ -367,6 +367,24 @@ static void CheckRecall(zuxia::ColumnarDecoder* decoder) {
     for (size_t j = i + 1; j < words.size(); ++j)
       if (words[i] == words[j]) dup = true;
   Assert("no duplicate between the learned pick and the fallback list", !dup);
+
+  // 整串死码上挂着一条回流记录时，回流不能把这串码伪装成「仍然有效」。
+  // 这种记录来自数据升级（旧码失效）或用户按 Decoder.h 的提示手改这张表。
+  // 一旦信了它，兜底那段就不跑，多打出来的那几位按键不会交回 Rime，
+  // 用户真按过的键凭空消失 —— 而屏幕上什么提示都没有。
+  std::remove(path);
+  decoder->SetUserTable(wide);
+  f = std::fopen(path, "wb");
+  if (f) {
+    std::fprintf(f, "%s\t%s\n", kDead, kPeng);  // 死码 -> 一个词
+    std::fclose(f);
+  }
+  tail.clear();
+  words = decoder->Decode(kDead, 9, &tail);
+  Assert("a learned record on a dead code does not suppress the fallback",
+         tail == "h");
+  Assert("the fallback list is what a dead code yields",
+         !words.empty() && Utf8(words[0]) == kZu);
   decoder->SetUserTable(std::wstring());
   std::remove(path);
 }

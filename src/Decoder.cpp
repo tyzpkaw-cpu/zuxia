@@ -709,6 +709,16 @@ std::vector<std::wstring> ColumnarDecoder::Decode(const std::string& raw,
   std::vector<std::wstring> result;
   if (limit == 0) return result;
 
+  // 先看这串码本身解不解得出东西。回流表只管把用户选过的往前排，不该凭空
+  // 造候选：数据升级（或用户手改过这张表）之后，一条早就解不出任何字的旧
+  // 记录会把这串码伪装成「仍然有效」，于是兜底那段不跑、多出来的那几位按键
+  // 也不会交回 Rime —— 用户真按过的键就凭空消失了。
+  std::vector<std::wstring> exact = Search(raw, limit);
+  if (exact.empty()) {
+    // 这串码整体是死码。退到最长有效前缀，并报出没用上的尾巴。
+    return SearchLongestPrefix(raw, limit, fallback_tail);
+  }
+
   const std::string code = NormalizeKeys(raw);
   if (code.size() >= 2) {
     const auto learned = user_.find(code);
@@ -720,14 +730,12 @@ std::vector<std::wstring> ColumnarDecoder::Decode(const std::string& raw,
     }
   }
 
-  for (std::wstring& word : Search(raw, limit)) {
+  for (std::wstring& word : exact) {
     if (result.size() >= limit) break;
     if (std::find(result.begin(), result.end(), word) != result.end()) continue;
     result.push_back(std::move(word));
   }
-  if (!result.empty()) return result;
-  // 这串码整体是死码。退到最长有效前缀，并报出没用上的尾巴。
-  return SearchLongestPrefix(raw, limit, fallback_tail);
+  return result;
 }
 
 }  // namespace zuxia

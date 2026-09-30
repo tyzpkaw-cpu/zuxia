@@ -57,6 +57,18 @@ ZUXIA_COM_GUARD_BEGIN
                 {
                     if (!IsRangeCovered(ecReadOnly, tfSelection.range, pRangeComposition))
                     {
+                       // 插入点被移到组字范围外面了（用户点了别处、应用自己
+                       // 挪了光标）。这时候把未提交的码丢掉是有意为之：组字
+                       // 范围里放着的是拉丁码串，把它落进文档只会留下一串
+                       // 看不懂的字母。但它确实是一次「用户按过的键没了」，
+                       // 所以必须留下记号 —— 原先这条路一声不吭，日志里连
+                       // 一行都没有，真机上排查不出来。
+                       static LONG seen = 0;
+                       if (InterlockedIncrement(&seen) <= 8)
+                       {
+                           zuxia::LogEvent(L"composition-dropped",
+                                           L"selection moved out of range");
+                       }
                        _EndComposition(pContext);
                     }
 

@@ -356,6 +356,24 @@ void CTextService::_ToggleInputMode() {
 
 void CTextService::_ApplyInputMode() {
   const bool native = _IsNativeMode();
+  // 切到西文时光清 librime 不够：TSF 那边的组字范围还留着一串码，它会变成
+  // 文档里清不掉的死文本；解码器的候选覆盖层也还挂着，之后的数字键会被它
+  // 截下去选一个早就不在屏幕上的候选。
+  //
+  // 这个函数是 compartment 的回调，别的进程（或同进程的别的线程）翻模式时
+  // 本进程也会走到这里 —— 而 _ToggleInputMode 里那段收尾只在按 Shift 的那
+  // 个线程上跑。所以收尾必须在这里做一次。
+  if (!native && (_IsComposing() || _EngineComposing()) && _pThreadMgr) {
+    ITfDocumentMgr* focused = nullptr;
+    if (SUCCEEDED(_pThreadMgr->GetFocus(&focused)) && focused) {
+      ITfContext* context = nullptr;
+      if (SUCCEEDED(focused->GetTop(&context)) && context) {
+        _EndComposition(context);  // 里面会 engine_.Clear() 并隐藏候选窗
+        context->Release();
+      }
+      focused->Release();
+    }
+  }
   if (_EngineReady()) _Engine().SetAsciiMode(!native);
   if (!native) _HideCandidateWindow();
   if (lang_bar_) lang_bar_->Refresh();
