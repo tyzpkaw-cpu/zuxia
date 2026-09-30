@@ -40,7 +40,8 @@
 ### 4.1 改了什么
 1. `data-tools/generate_phrases.py`：新增 `write_decoder_data()`，产出 `data/zuxia.decoder.tsv`（3,097,914 字节）。四段格式（每行首列是段标）：`s` 合法音节 / `w` 字+权重 / `c` 码→字（含两条补位规则）/ `b` 二元组（前 20 万词统计，161,558 条）。
 2. `src/Decoder.h` + `src/Decoder.cpp`（新）：`ColumnarDecoder`，`Load / Ready / Decode`。DP 切音节 + 定向搜索（beam）；打分 = Σlog(字频) + Σ二元组，按字数归一。用 `char32_t`（8,105 字里有 205 个超 BMP，不能用单个 wchar_t）。
-3. `src/RimeEngine.h` + `src/RimeEngine.cpp` 接线：解码器懒加载；**仅当 Rime 一个候选都给不出、且输入 ≥3 键时**出解码候选（最多 9 个）；数字键 1–9 / 空格在 `ProcessKey` 里被截获落字（`overlay_` 机制）；`Clear()` 清 overlay。
+3. `src/RimeEngine.h` + `src/RimeEngine.cpp` 接线：解码器懒加载；数字键 1–9 / 空格在 `ProcessKey` 里被截获落字（`overlay_` 机制）；`Clear()` 清 overlay。
+   ——**这一条后来改了**：当初写的是「仅当 Rime 一个候选都给不出、且输入 ≥3 键时才出解码候选」，那个门槛定错了（Rime 给出候选不等于给对）。现在是**补位**：Rime 的候选原样排在前面，解码器填候选页剩下的空位，只在第一页补。见 `RimeEngine::FillDecodedCandidates`。
 4. `tools/linux-selftest/`（新）：`windows.h` 桩 + `decoder-selftest.cpp`，在 Linux 上直接编 `Decoder.cpp` 跑 11 条断言。
 5. `data-tools/audit_zuxia.py`：安装载荷检查的数据文件集合从 `*.yaml` 扩到 `*.yaml + *.tsv`。
 6. 配套清单：`CMakeLists.txt`（源文件 +Decoder.cpp；install 加 `PATTERN "*.tsv"`；缺 decoder.tsv 的 FATAL_ERROR 守卫）、`tools/build-engine-test.ps1`（+src\Decoder.cpp）、`.gitignore`（+/data/zuxia.decoder.tsv）、`installer/setup/setup.cpp` 与 `installer/Install-Zuxia.ps1`（载荷清单 +zuxia.decoder.tsv）、`.github/workflows/build-installer.yml`（ubuntu job 加「C++ 解码器自检（Linux）」一步）、`scripts/verify-install.ps1`（安装后核对的数据文件清单 +extended/+decoder）。
@@ -85,7 +86,7 @@ python3 data-tools/decode_zuxia.py --selftest  # 期望：11 项通过
 
 ### 4.5 接线细节备查（编译或行为不对时先看这里）
 - `EnsureDecoder()`：`std::call_once` 懒加载 `data/zuxia.decoder.tsv`（相对模块目录的 `..\data`），日志 key `decoder-loaded` / `decoder-unavailable`。
-- `FillDecodedCandidates()`：Rime 候选为空、preedit 非空、`get_input()` 长度 ≥3 才解码；最多 9 个，label "1".."9"。
+- `FillDecodedCandidates()`：**补位**（已不是「Rime 候选为空才上场」）。preedit 非空、`get_input()` 长度 ≥3、且这一页还有空位才解码；只在 `page_no == 0` 补；一页共 9 条，label 从 Rime 候选之后接着排。整串码解不出东西时退到最长有效前缀，并把没用上的尾巴交回 Rime（见 `SearchLongestPrefix` 与 `overlay_tail_`）。
 - `ProcessKey()`：`overlay_` 非空且无修饰键时，`1`–`9` 选第 N 个、空格选第 1 个，直接提交并 `clear_composition`；其余按键照常交给 Rime。
 - `Snapshot()` 目前没有调用方（全仓库查过），不用管。
 

@@ -466,7 +466,14 @@ EngineSnapshot RimeEngine::ReadSnapshot(bool handled) {
 }
 
 bool RimeEngine::InitializeRuntime(HMODULE module) {
-  std::filesystem::path module_dir(ModuleDirectory(module));
+  const std::wstring module_path = ModuleDirectory(module);
+  if (module_path.empty()) {
+    // 拿不到自己的路径就不能确定 rime.dll 和 data\ 在哪。以前这里会退化成
+    // 当前工作目录，那是个可写目录，等于自己给劫持开门。
+    LogEvent(L"engine-failed", L"module directory unavailable");
+    return false;
+  }
+  std::filesystem::path module_dir(module_path);
   // An application that is already running when the IME is upgraded keeps
   // the old DLL mapped until it restarts, and then behaves like a version
   // that is no longer installed. The build stamp is the only thing in the
@@ -480,14 +487,15 @@ bool RimeEngine::InitializeRuntime(HMODULE module) {
     return false;
   }
 
+  // 目标平台是 Windows 10（CMakeLists 里 _WIN32_WINNT=0x0A00），这两个标志
+  // 一定支持。原先失败时还退回一次裸 LoadLibraryW —— 那一条不带任何
+  // LOAD_LIBRARY_SEARCH_*，走的是旧的宽松顺序，里面包含**当前工作目录**。
+  // 我们是被加载进别人进程里的，宿主的工作目录可能是下载目录或临时目录，
+  // 那等于给了一跳顶替 rime.dll 的机会。宁可加载失败：失败只是输入法不能
+  // 用，加载错的 DLL 是在宿主权限下跑别人的代码。
   runtime_module_ = LoadLibraryExW(
       runtime_path.c_str(), nullptr,
       LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
-  if (!runtime_module_) {
-    // Full-path fallback for older loader configurations. The official
-    // librime binary only imports Windows system DLLs.
-    runtime_module_ = LoadLibraryW(runtime_path.c_str());
-  }
   if (!runtime_module_) {
     LogFailure(L"engine-failed-loadlibrary", GetLastError());
     return false;
@@ -566,11 +574,15 @@ bool RimeEngine::InitializeRuntime(HMODULE module) {
   return true;
 }
 
+// 拿不到真实模块路径就返回空串。原先返回 "."，也就是**当前工作目录** ——
+// 我们是被加载进别人进程里的，那个目录经常可写（解压到临时目录运行的程序、
+// 从下载目录启动的程序），于是 rime.dll 和 data\ 都会从那里找。调用方必须
+// 把空串当硬错误处理。
 std::wstring RimeEngine::ModuleDirectory(HMODULE module) {
   std::wstring path(32768, L'\0');
   const DWORD length =
       GetModuleFileNameW(module, path.data(), static_cast<DWORD>(path.size()));
-  if (!length || length >= path.size()) return L".";
+  if (!length || length >= path.size()) return std::wstring();
   path.resize(length);
   return std::filesystem::path(path).parent_path().wstring();
 }

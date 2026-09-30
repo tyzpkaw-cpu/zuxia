@@ -208,6 +208,27 @@ def report(path: pathlib.Path, label: str, out, readings):
     unique = sum(1 for c, chars in deepest.items() if len(chars) == 1)
     out.write(f"    打满时唯一的码占比 {unique/len(deepest):6.2%}\n")
 
+    # 「码打满就唯一」曾经是拒绝模糊纠偏的核心论据。上面那一行早就说了它只有
+    # 八成多，但那是按「码」数的；下面两行按「字」数，并且给出字频加权 ——
+    # 这才是使用者真正会撞上的那一面。一个字连一个唯一满码都没有，就意味着
+    # 它无论怎么打都得选字。
+    owners = {c: {t for t, _ in items} for c, items in by_code.items()}
+    heaviest: dict[str, int] = {}
+    for text, _code, weight in rows:
+        heaviest[text] = max(heaviest.get(text, 0), weight)
+    total_weight = sum(heaviest.values()) or 1
+    no_unique_full = [c for c, codes in by_char.items()
+                      if not any(len(owners[k]) == 1 for k in codes
+                                 if len(k) == max(len(x) for x in codes))]
+    never_unique = [c for c, codes in by_char.items()
+                    if not any(len(owners[k]) == 1 for k in codes)]
+    out.write(f"    打满仍不唯一的字 {len(no_unique_full)} 个"
+              f"（字数 {len(no_unique_full)/len(by_char):.2%}，"
+              f"字频 {sum(heaviest[c] for c in no_unique_full)/total_weight:.2%}）\n")
+    out.write(f"    任何长度都不唯一的字 {len(never_unique)} 个"
+              f"（字数 {len(never_unique)/len(by_char):.2%}，"
+              f"字频 {sum(heaviest[c] for c in never_unique)/total_weight:.2%}）\n")
+
     out.write(f"\n  分码长\n")
     for length in sorted(stem):
         codes = stem[length]

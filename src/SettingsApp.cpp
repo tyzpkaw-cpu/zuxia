@@ -581,6 +581,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam,
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
+  // 把按名解析的 DLL 搜索顺序收紧到「本模块目录 + System32」，去掉当前工作
+  // 目录和 PATH。这件事只能在自己的进程里做：文本服务那边是被加载进别人
+  // 进程的，改进程级搜索策略会改掉宿主的行为，不是我们该做的事。
+  SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+
   // 已经开着一个就把它拎到前面来，不要开第二个 —— 两个窗口各写各的文件，
   // 后保存的那个会把前一个的改动盖掉。
   HANDLE once = CreateMutexW(nullptr, TRUE, L"Local\\ZuxiaSettingsSingleton");

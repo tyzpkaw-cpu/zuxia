@@ -367,6 +367,10 @@ def main() -> int:
 
     rows: dict[tuple[str, str], int] = {}
     stats = collections.Counter()
+    # 结构码分布得报两种口径。未加权的那份看着「独体很少」，加权之后完全
+    # 是另一回事 —— 一、人、口、山 这些最常用的字大半是独体。README 引过
+    # 只有未加权的那一列且没标口径，外部复审据此判定那张表在误导读者。
+    structure_weight: collections.Counter = collections.Counter()
     per_char_codes: list[int] = []
     unnamed: collections.Counter = collections.Counter()
 
@@ -374,6 +378,7 @@ def main() -> int:
         source = (hanzi.get(char) or {}).get("decomposition") or ids.get(char, "")
         structure = classify_structure(parse_ids(source), char, overrides)
         stats[f"structure_{structure}"] += 1
+        structure_weight[structure] += weight
 
         parts = components_of(char, hanzi, ids)
         usable = [p for p in parts if letters_for(p, names, hanzi)]
@@ -411,6 +416,12 @@ def main() -> int:
         "codes_per_character_avg": round(sum(per_char_codes) / len(per_char_codes), 2),
         "codes_per_character_max": max(per_char_codes),
         "structure": {k[10:]: v for k, v in stats.items() if k.startswith("structure_")},
+        # 口径：上面 structure 是逐（字，读音）对的计数（与 characters 同分母），
+        # 下面这份是同一批对按字频加权后的占比（百分数，两位小数）。
+        "structure_weighted_pct": {
+            k: round(100 * v / max(sum(structure_weight.values()), 1), 2)
+            for k, v in sorted(structure_weight.items())
+        },
         "two_or_more_components": stats["two_or_more_components"],
         "one_component": stats["one_component"],
         "no_component": stats["no_component"],

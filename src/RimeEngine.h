@@ -67,8 +67,10 @@ class RimeEngine {
 
  private:
   EngineSnapshot ReadSnapshot(bool handled);
-  // 列式解码器。Rime 一个候选都给不出来时才上场，数据也是那时才加载 ——
-  // 多数人打一天字也碰不到它，没必要让每个宿主进程先吃三兆内存。
+  // 列式解码器。它现在是**补位**：Rime 的候选原样排在前面，解码器填这一页
+  // 剩下的空位（旧规则是「Rime 一个候选都给不出来时才上场」，那个门槛定错
+  // 了 —— 有候选不等于给对，详见 RimeEngine.cpp 的 FillDecodedCandidates）。
+  // 数据仍是懒加载：第一次真的要解码时才读那三兆。
   static bool EnsureDecoder();
   void FillDecodedCandidates(EngineSnapshot* out);
   // Fills candidate.comment with the candidate's own complete Zuxia code.

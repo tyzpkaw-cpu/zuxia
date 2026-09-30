@@ -233,9 +233,9 @@ int main() {
   Expect("词表外的 `suyao` 仍拼得出一个两字候选",
          OffersLength(&engine, "suyao", 2));
 
-  // 列式解码器：词表外的词把三档码打满也要能出。走的是「Rime 一个候选都
-  // 给不出来时才上场」那条路，所以这两条同时验了解码本身和 RimeEngine 里
-  // 那段接线；用例与 tools/linux-selftest 的 11 条断言一致。
+  // 列式解码器：词表外的词把三档码打满也要能出。它现在是补位 —— Rime 的
+  // 候选排在前面，解码器填这一页剩下的空位，所以这两条同时验了解码本身和
+  // RimeEngine 里那段接线；用例与 tools/linux-selftest 的断言一致。
   printf("\ncolumnar decoder (out-of-dictionary):\n");
   Expect("杨志鹏 under `yangzhipengzszmsp` (全拼+结构+部件)",
          OffersText(&engine, "yangzhipengzszmsp", L"杨志鹏"));
