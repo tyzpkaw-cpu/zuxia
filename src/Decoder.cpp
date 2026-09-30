@@ -81,7 +81,12 @@ std::wstring CodePointsToWide(const std::u32string& text) {
 bool ReadWholeFile(const std::wstring& path, std::string* out,
                    unsigned long* error) {
   if (error) *error = 0;
-  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+  // FILE_SHARE_WRITE 必须给：回流表同时被别的宿主进程以 FILE_APPEND_DATA
+  // 打开着，只声明 FILE_SHARE_READ 会直接 ERROR_SHARING_VIOLATION ——
+  // 表现是「回流偶尔整个失效」。FILE_SHARE_DELETE 让压缩时的改名能顶上去。
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                FILE_SHARE_DELETE,
                             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
                             nullptr);
   if (file == INVALID_HANDLE_VALUE) {
@@ -191,25 +196,75 @@ bool AppendLine(const std::wstring& path, const std::string& line) {
   // 而新句柄的文件指针在 0 —— 诊断日志就是这么把自己一行行覆写掉的。几个
   // 宿主进程共写这个文件，单次写远小于一个扇区，追加由文件系统串行化。
   HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA,
-                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                            FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                FILE_SHARE_DELETE,
+                            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                            nullptr);
   if (file == INVALID_HANDLE_VALUE) return false;
-  DWORD written = 0;
-  const BOOL ok = WriteFile(file, line.data(),
-                            static_cast<DWORD>(line.size()), &written, nullptr);
+  // WriteFile 返回 TRUE 也可能只写进去一部分（磁盘满、配额到顶）。半行留在
+  // 文件里，下一次追加会跟它粘成一行，解析出来就是一个谁也没打过的码对着
+  // 一个谁也没选过的词 —— 而回流表的东西是排在候选第一位的。所以要么把
+  // 这一行补完，要么至少补一个换行把它隔断，并且如实返回失败。
+  size_t done = 0;
+  bool ok = true;
+  while (done < line.size()) {
+    DWORD written = 0;
+    // WriteFile 返回 FALSE 时 written 仍然是真的写进去了多少，所以先记账
+    // 再判成败 —— 不然补换行那一步会以为一个字节都没写出去。
+    const BOOL wrote = WriteFile(file, line.data() + done,
+                                 static_cast<DWORD>(line.size() - done),
+                                 &written, nullptr);
+    done += written;
+    if (!wrote || written == 0) {
+      ok = false;
+      break;
+    }
+  }
+  if (!ok && done > 0 && line[done - 1] != '\n') {
+    // 已经写进去半行了，补个换行封住它。补不上也只能这样。
+    DWORD ignored = 0;
+    WriteFile(file, "\n", 1, &ignored, nullptr);
+  }
   CloseHandle(file);
-  return ok != 0;
+  return ok;
 }
 
-bool WriteWholeFile(const std::wstring& path, const std::string& bytes) {
-  HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+bool WriteAllBytes(HANDLE file, const std::string& bytes) {
+  const char* cursor = bytes.data();
+  size_t left = bytes.size();
+  while (left > 0) {
+    DWORD written = 0;
+    if (!WriteFile(file, cursor, static_cast<DWORD>(left), &written, nullptr) ||
+        written == 0) {
+      return false;
+    }
+    cursor += written;
+    left -= written;
+  }
+  return FlushFileBuffers(file) != FALSE;
+}
+
+// 压缩回流表用。CREATE_ALWAYS 直接截原文件的话，另一个宿主进程正好在追加
+// 就会写到被截掉的偏移上，中间留一段 NUL；写一半失败更是直接把用户攒下的
+// 回流清空。所以先写临时文件，全部落盘了再改名顶上去。
+bool ReplaceWholeFile(const std::wstring& path, const std::string& bytes) {
+  const std::wstring temp = path + L".new";
+  HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr,
                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) return false;
-  DWORD written = 0;
-  const BOOL ok = WriteFile(file, bytes.data(),
-                            static_cast<DWORD>(bytes.size()), &written, nullptr);
+  const bool ok = WriteAllBytes(file, bytes);
   CloseHandle(file);
-  return ok != 0;
+  if (!ok) {
+    DeleteFileW(temp.c_str());
+    return false;
+  }
+  if (!MoveFileExW(temp.c_str(), path.c_str(),
+                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    // 别的进程正抓着这个文件。这一轮不压缩，下一轮再来。
+    DeleteFileW(temp.c_str());
+    return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -509,12 +564,24 @@ void ColumnarDecoder::MaybeReloadUserTable() {
   if (user_path_.empty()) return;
   const long long bytes = FileBytes(user_path_);
   if (bytes == user_bytes_) return;  // 只追加的文件，长度没变就是没变
-  user_bytes_ = bytes;
-  user_.clear();
-  if (bytes <= 0) return;
+  if (bytes <= 0) {
+    user_bytes_ = bytes;
+    user_.clear();
+    return;
+  }
 
   std::string text;
+  // 读失败（别人正独占着、瞬时 I/O 错）时不能记下这个长度 —— 记了就再也
+  // 不会重读，回流表在这个进程里等于永久失效。原样退出，下一次再试。
   if (!ReadWholeFile(user_path_, &text, nullptr)) return;
+  user_bytes_ = bytes;
+  user_.clear();
+
+  // 文件不是以换行收尾 —— 最后那一行是半写的，扔掉。
+  if (!text.empty() && text.back() != '\n') {
+    const size_t last = text.find_last_of('\n');
+    text.resize(last == std::string::npos ? 0 : last + 1);
+  }
 
   size_t lines = 0;
   size_t begin = 0;
@@ -560,7 +627,7 @@ void ColumnarDecoder::MaybeReloadUserTable() {
     at = end + 1;
     --drop;
   }
-  if (at < text.size() && WriteWholeFile(user_path_, text.substr(at))) {
+  if (at < text.size() && ReplaceWholeFile(user_path_, text.substr(at))) {
     user_bytes_ = FileBytes(user_path_);
   }
 }

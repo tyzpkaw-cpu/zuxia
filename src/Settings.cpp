@@ -78,17 +78,47 @@ bool ReadUtf8(const std::wstring& path, std::wstring* out) {
       static_cast<unsigned char>(bytes[2]) == 0xBF) {
     bytes.erase(0, 3);
   }
+  // 只剩 BOM（或彻底空）说明上一次写盘写崩了 —— 当成读失败，让调用方退回
+  // 默认值，而不是把它当成「用户把所有项都清空了」。
+  if (bytes.empty()) {
+    out->clear();
+    return false;
+  }
   const int needed = MultiByteToWideChar(CP_UTF8, 0, bytes.c_str(),
                                          static_cast<int>(bytes.size()),
                                          nullptr, 0);
   if (needed <= 0) {
     out->clear();
-    return bytes.empty();
+    return false;
   }
   out->assign(static_cast<size_t>(needed), L'\0');
   MultiByteToWideChar(CP_UTF8, 0, bytes.c_str(),
                       static_cast<int>(bytes.size()), out->data(), needed);
   return true;
+}
+
+// WriteFile 可能只写进去一部分，返回 TRUE 也一样。必须看 written 并补写。
+bool WriteAll(HANDLE file, const void* data, size_t size) {
+  const char* cursor = static_cast<const char*>(data);
+  while (size > 0) {
+    DWORD written = 0;
+    const DWORD chunk =
+        static_cast<DWORD>(size > 0x10000000u ? 0x10000000u : size);
+    if (!WriteFile(file, cursor, chunk, &written, nullptr)) return false;
+    if (written == 0) return false;
+    cursor += written;
+    size -= written;
+  }
+  return true;
+}
+
+// 带 BOM 写出去：记事本不看 BOM 就会把中文当 ANSI 读，一开就是乱码。
+bool WriteBody(HANDLE file, const std::string& bytes) {
+  const char bom[3] = {'\xEF', '\xBB', '\xBF'};
+  if (!WriteAll(file, bom, 3)) return false;
+  if (!bytes.empty() && !WriteAll(file, bytes.data(), bytes.size()))
+    return false;
+  return FlushFileBuffers(file) != FALSE;
 }
 
 bool WriteUtf8(const std::wstring& path, const std::wstring& text,
@@ -98,19 +128,39 @@ bool WriteUtf8(const std::wstring& path, const std::wstring& text,
                                          nullptr, 0, nullptr, nullptr);
   if (needed < 0) return false;
   std::string bytes(static_cast<size_t>(needed), '\0');
-  WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
-                      bytes.data(), needed, nullptr, nullptr);
-  HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
-                            nullptr, overwrite ? CREATE_ALWAYS : CREATE_NEW,
-                            FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (needed > 0) {
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
+                        bytes.data(), needed, nullptr, nullptr);
+  }
+
+  // 「只在不存在时创建」这层语义只能直接对目标文件下手。
+  if (!overwrite) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                              CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    const bool ok = WriteBody(file, bytes);
+    CloseHandle(file);
+    if (!ok) DeleteFileW(path.c_str());
+    return ok;
+  }
+
+  // 覆盖写先落到同目录的临时文件，全写成功才改名顶上去。CREATE_ALWAYS 直接
+  // 冲原文件的话，中途失败会留下一个被截断的 zuxia.txt，用户的配色全没了。
+  const std::wstring temp = path + L".new";
+  HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) return false;
-  // 带 BOM 写出去：记事本不看 BOM 就会把中文当 ANSI 读，一开就是乱码。
-  const char bom[3] = {'\xEF', '\xBB', '\xBF'};
-  DWORD written = 0;
-  WriteFile(file, bom, 3, &written, nullptr);
-  WriteFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &written,
-            nullptr);
+  const bool ok = WriteBody(file, bytes);
   CloseHandle(file);
+  if (!ok) {
+    DeleteFileW(temp.c_str());
+    return false;
+  }
+  if (!MoveFileExW(temp.c_str(), path.c_str(),
+                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    DeleteFileW(temp.c_str());
+    return false;
+  }
   return true;
 }
 
@@ -198,14 +248,27 @@ int ParseInt(const std::wstring& value, int fallback, int low, int high) {
   return static_cast<int>(parsed);
 }
 
+// 去掉行尾注释。颜色值本身就以井号开头（#RRGGBB），所以只有「空白 + #」才算
+// 注释的起点；写在值开头的那个井号要留着。
+std::wstring StripInlineComment(const std::wstring& value) {
+  for (size_t i = 1; i < value.size(); ++i) {
+    if (value[i] != L'#') continue;
+    if (value[i - 1] == L' ' || value[i - 1] == L'\t')
+      return value.substr(0, i);
+  }
+  return value;
+}
+
 void ApplyLine(const std::wstring& raw, Appearance* out) {
-  std::wstring line = raw;
-  const size_t hash = line.find(L'#');
-  if (hash != std::wstring::npos) line.erase(hash);
-  size_t split = line.find_first_of(L"=:：＝");
+  const std::wstring line = Trim(raw);
+  if (line.empty() || line[0] == L'#' || line[0] == L';') return;
+  const size_t split = line.find_first_of(L"=:：＝");
   if (split == std::wstring::npos) return;
+  // 分隔符之前就冒出井号 —— 整行是注释，里头的「：」不算分隔符。
+  if (line.substr(0, split).find(L'#') != std::wstring::npos) return;
   const std::wstring key = Trim(line.substr(0, split));
-  const std::wstring value = Trim(line.substr(split + 1));
+  const std::wstring value =
+      Trim(StripInlineComment(Trim(line.substr(split + 1))));
   if (key.empty() || value.empty()) return;
   const std::wstring k = Lower(key);
 

@@ -114,10 +114,12 @@ bool RimeEngine::IsComposing() const {
 // 应用正开着的时候升级输入法，数据文件有一瞬间不在。所以失败要能重试，但不能
 // 每次按键都去读一遍 3 MB，于是加了冷却时间。
 bool RimeEngine::EnsureDecoder() {
-  if (decoder_ready_) return true;
   if (shared_data_dir_.empty()) return false;
 
   constexpr unsigned long kRetryMs = 30 * 1000;
+  // 锁外先读 decoder_ready_ 的那条快路径撤掉了：decoder_ 是进程级静态量，
+  // 一个进程里可以有多个 RimeEngine（TSF 每个线程一份文本服务），读写它必须
+  // 全程在锁里。未争用的 std::mutex 只有几十纳秒，按键路径扛得住。
   std::lock_guard<std::mutex> guard(decoder_mutex_);
   if (decoder_ready_) return true;
   const unsigned long now = GetTickCount();
@@ -179,6 +181,10 @@ void RimeEngine::FillDecodedCandidates(EngineSnapshot* out) {
   std::string tail;
   try {
     // 多要一些：与 Rime 重复的要丢掉，丢完还得填得满。
+    // decoder_ 是进程级静态量，Decode 会读回流表（unordered_map），而
+    // RecordChoice 会写它 —— 同进程的另一个线程同时打字就是并发读写，
+    // 所以这两处都得拿同一把锁。
+    std::lock_guard<std::mutex> guard(decoder_mutex_);
     words = decoder_.Decode(keys, room + taken, &tail);
   } catch (...) {
     return;
@@ -244,7 +250,13 @@ EngineSnapshot RimeEngine::ProcessKey(int keycode, int modifiers) {
       out.handled = true;
       out.commit = overlay_[static_cast<size_t>(pick) - base];
       // 回流：这是用户在这串码上的选择，记下来，下次同一串码直接前置。
-      decoder_.RecordChoice(overlay_code_, out.commit);
+      // 同 Decode，写回流表必须持锁。
+      try {
+        std::lock_guard<std::mutex> guard(decoder_mutex_);
+        decoder_.RecordChoice(overlay_code_, out.commit);
+      } catch (...) {
+        // 记不下来不影响这次落字，静默放过。
+      }
       const std::string tail = overlay_tail_;
       overlay_.clear();
       overlay_code_.clear();
@@ -603,7 +615,21 @@ bool RimeEngine::IsPunctuationKey(WPARAM virtual_key) {
 
 int RimeEngine::VirtualKeyToRimeKey(WPARAM virtual_key) {
   if (virtual_key >= 'A' && virtual_key <= 'Z') {
+    // 字母也先问一次键盘布局，跟数字键和默认分支保持一致。Windows 的布局
+    // DLL 通常会把虚拟键码跟着字母一起换（法语 AZERTY 的「a」键就是 VK_A，
+    // 德语的「z」键就是 VK_Z），所以这一步在常见布局上结果不变；它挡的是
+    // 虚拟键码按物理位置排的那类布局。
+    // 取到的字符统一压成小写：Shift 和 CapsLock 会让 ToUnicodeEx 返回大写，
+    // 而列式码一律用小写喂 librime。非拉丁布局（俄语、希腊语）问不出 ASCII
+    // 字母，退回虚拟键码 —— 那样至少还能打字。
+    const int ch = AsciiForKey(virtual_key);
+    if (ch >= 'a' && ch <= 'z') return ch;
+    if (ch >= 'A' && ch <= 'Z') return ch - 'A' + 'a';
     return static_cast<int>(virtual_key - 'A' + 'a');
+  }
+  if (virtual_key >= VK_NUMPAD0 && virtual_key <= VK_NUMPAD9) {
+    // 小键盘数字：ToUnicodeEx 要看 NumLock 的切换位，问它不如直接算。
+    return static_cast<int>(virtual_key - VK_NUMPAD0 + '0');
   }
   if (virtual_key >= '0' && virtual_key <= '9') {
     // 数字键按住 Shift 打出来的是标点：！＠＃￥％……＆＊（）。原先这里

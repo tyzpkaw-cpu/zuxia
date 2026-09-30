@@ -30,7 +30,11 @@ bool IsCompositionControlKey(WPARAM key) {
     case VK_NEXT:
       return true;
     default:
-      return key >= '0' && key <= '9';
+      // 小键盘的 0–9 也要算数：NumLock 开着时它们送的是 VK_NUMPAD0..9
+      // （0x60–0x69），不在主键盘那一段里。漏掉的话组字中按小键盘 3 会
+      // 把「3」原样插进文档，而已经打进去的码被这次写入顶掉。
+      return (key >= '0' && key <= '9') ||
+             (key >= VK_NUMPAD0 && key <= VK_NUMPAD9);
   }
 }
 

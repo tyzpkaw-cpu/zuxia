@@ -94,7 +94,7 @@ std::string Narrow(const std::wstring& text) {
 // misbehaving, and the run-up to the failure is the part worth reading. So
 // the last kKeepBytes are kept and the rest dropped, starting at the first
 // line boundary so the file never opens on half a line.
-void TrimIfLarge(HANDLE file, bool exclusive) {
+void TrimIfLarge(HANDLE file, bool exclusive) noexcept {
   // 追加是原子的，整体重写不是。没拿到那把跨进程互斥量就别动文件结构 ——
   // 另一个宿主进程可能正在往里追加，两边一撞，日志就成了碎片，而那正是
   // 这把锁存在的理由。这一轮不裁，下一轮拿到锁再说。
@@ -103,7 +103,14 @@ void TrimIfLarge(HANDLE file, bool exclusive) {
   if (!GetFileSizeEx(file, &size) || size.QuadPart < kMaxBytes) return;
 
   const long long start = size.QuadPart - kKeepBytes;
-  std::vector<char> tail(static_cast<size_t>(kKeepBytes));
+  // 这 64 KB 是这个文件里唯一会抛的分配。低内存时宁可不裁 —— 日志长一点
+  // 没人会死，从日志函数里抛出去会。
+  std::vector<char> tail;
+  try {
+    tail.resize(static_cast<size_t>(kKeepBytes));
+  } catch (...) {
+    return;
+  }
   LARGE_INTEGER at = {};
   at.QuadPart = start;
   if (!SetFilePointerEx(file, at, nullptr, FILE_BEGIN)) return;
@@ -134,14 +141,17 @@ void TrimIfLarge(HANDLE file, bool exclusive) {
 
 }  // namespace
 
-void DisableLogging() { g_enabled = false; }
+void DisableLogging() noexcept { g_enabled = false; }
 
 std::wstring LogPath() {
   std::call_once(g_once, Initialize);
   return g_enabled ? g_path : std::wstring();
 }
 
-void LogEvent(const wchar_t* event, const std::wstring& detail) {
+// 真正干活的那一份。它会构造 std::wstring，所以会抛；外面那两个 noexcept
+// 的入口负责把异常吞住。
+namespace {
+void LogLine(const wchar_t* event, const wchar_t* detail) {
   if (!g_enabled || !event) return;
   std::call_once(g_once, Initialize);
   if (!g_enabled || g_path.empty()) return;
@@ -153,7 +163,7 @@ void LogEvent(const wchar_t* event, const std::wstring& detail) {
   line += g_host;
   line += prefix;
   line += event;
-  if (!detail.empty()) {
+  if (detail && *detail) {
     line += L": ";
     line += detail;
   }
@@ -209,11 +219,27 @@ void LogEvent(const wchar_t* event, const std::wstring& detail) {
     CloseHandle(mutex);
   }
 }
+}  // namespace
 
-void LogFailure(const wchar_t* event, unsigned long code) {
+void LogEvent(const wchar_t* event, const wchar_t* detail) noexcept {
+  try {
+    LogLine(event, detail);
+  } catch (...) {
+    // 故意吞掉。见 Diagnostics.h 的说明：日志绝不能成为异常出口。
+  }
+}
+
+void LogEvent(const wchar_t* event, const std::wstring& detail) noexcept {
+  try {
+    LogLine(event, detail.c_str());
+  } catch (...) {
+  }
+}
+
+void LogFailure(const wchar_t* event, unsigned long code) noexcept {
   wchar_t buffer[32] = {};
   swprintf_s(buffer, L"0x%08lX", code);
-  LogEvent(event, buffer);
+  LogEvent(event, static_cast<const wchar_t*>(buffer));
 }
 
 }  // namespace zuxia

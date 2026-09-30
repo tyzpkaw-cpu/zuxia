@@ -25,10 +25,17 @@ namespace zuxia {
 
 // Appends one line. `detail` is for stable technical values (HRESULTs, error
 // codes, file names) -- never user text.
-void LogEvent(const wchar_t* event, const std::wstring& detail = std::wstring());
+//
+// 这些函数是 noexcept，而且内部把一切异常吞掉。原因：ZUXIA_COM_GUARD_END
+// 的 catch 体里就调它们。它们自己在低内存时抛出去，防护网就从「拦住异常」
+// 变成了「制造异常」—— 从 COM 方法里抛出去等于把宿主程序带走。
+// 首选传 const wchar_t*：那条路上一个 std::wstring 临时量都不构造，所以
+// 连调用点都不会抛。
+void LogEvent(const wchar_t* event, const wchar_t* detail = nullptr) noexcept;
+void LogEvent(const wchar_t* event, const std::wstring& detail) noexcept;
 
 // Convenience for reporting a Win32 or COM failure code.
-void LogFailure(const wchar_t* event, unsigned long code);
+void LogFailure(const wchar_t* event, unsigned long code) noexcept;
 
 // The file LogEvent appends to, or empty when logging is off. Exposed so the
 // self-test can check that appending really appends -- writing every line at
@@ -37,7 +44,7 @@ std::wstring LogPath();
 
 // Turns logging off for the life of the process. Used when the log file
 // cannot be opened, so a broken log never costs more than the log.
-void DisableLogging();
+void DisableLogging() noexcept;
 
 }  // namespace zuxia
 

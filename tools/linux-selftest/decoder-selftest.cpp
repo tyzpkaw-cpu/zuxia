@@ -48,12 +48,27 @@ HANDLE CreateFileW(LPCWSTR name, DWORD access, DWORD, LPSECURITY_ATTRIBUTES,
   return file ? reinterpret_cast<HANDLE>(file) : INVALID_HANDLE_VALUE;
 }
 
+// 故障注入：>=0 时下一次 WriteFile 只写这么多字节就返回失败，用来模拟
+// 磁盘满。用一次即清。
+static int g_fail_write_after = -1;
+
 BOOL WriteFile(HANDLE handle, LPCVOID buffer, DWORD to_write, DWORD* written,
                LPOVERLAPPED) {
-  const size_t put = std::fwrite(buffer, 1, to_write,
+  DWORD limit = to_write;
+  bool fail = false;
+  if (g_fail_write_after >= 0) {
+    const DWORD cap = static_cast<DWORD>(g_fail_write_after);
+    if (cap < to_write) {
+      limit = cap;
+      fail = true;
+    }
+    g_fail_write_after = -1;
+  }
+  const size_t put = std::fwrite(buffer, 1, limit,
                                  reinterpret_cast<FILE*>(handle));
   if (written) *written = static_cast<DWORD>(put);
-  return put == static_cast<size_t>(to_write);
+  if (fail) return 0;
+  return put == static_cast<size_t>(limit);
 }
 
 BOOL GetFileSizeEx(HANDLE handle, LARGE_INTEGER* size) {
@@ -75,6 +90,21 @@ BOOL ReadFile(HANDLE handle, LPVOID buffer, DWORD to_read, DWORD* read, LPOVERLA
 
 BOOL CloseHandle(HANDLE handle) {
   return std::fclose(reinterpret_cast<FILE*>(handle)) == 0;
+}
+
+BOOL FlushFileBuffers(HANDLE handle) {
+  return std::fflush(reinterpret_cast<FILE*>(handle)) == 0;
+}
+
+BOOL DeleteFileW(LPCWSTR name) {
+  return std::remove(Narrow(name).c_str()) == 0;
+}
+
+// 压缩回流表走的是「写临时文件再改名顶上去」，所以这个桩得真的会改名。
+BOOL MoveFileExW(LPCWSTR from, LPCWSTR to, DWORD) {
+  const std::string target = Narrow(to);
+  std::remove(target.c_str());
+  return std::rename(Narrow(from).c_str(), target.c_str()) == 0;
 }
 
 // The decoder reports why a load failed. errno is the nearest equivalent the
@@ -274,6 +304,41 @@ static void CheckRecall(zuxia::ColumnarDecoder* decoder) {
   words = decoder->Decode(kCode, 9);
   Assert("a pick made by another process is picked up",
          !words.empty() && Utf8(words[0]) == kPeng);
+
+  // 半写的末行（没有换行收尾）必须整行扔掉 —— 它是一条断电/磁盘满留下的
+  // 残骸，不是一条记录。
+  f = std::fopen(path, "ab");
+  if (f) {
+    std::fputs("suyao", f);  // 没有制表符，也没有换行
+    std::fclose(f);
+  }
+  words = decoder->Decode(kCode, 9);
+  Assert("a half-written trailing line is dropped",
+         !words.empty() && Utf8(words[0]) == kPeng);
+
+  // 更要紧的是写的那一侧：WriteFile 返回成功也可能只写进去一部分，磁盘满
+  // 时还会写一半就失败。半行留在文件里，下一次追加会跟它粘成一行，解析出
+  // 来是一个谁也没打过的码对着一个谁也没选过的词 —— 而回流表的东西是排在
+  // 候选第一位的。所以写失败时必须补一个换行把它隔断。
+  // 这里注入一次「写 3 个字节就失败」。
+  g_fail_write_after = 3;
+  decoder->RecordChoice("henmazzrm", Wide(kPeng3));
+  g_fail_write_after = -1;
+  bool newline_terminated = false;
+  f = std::fopen(path, "rb");
+  if (f) {
+    std::fseek(f, -1, SEEK_END);
+    newline_terminated = std::fgetc(f) == '\n';
+    std::fclose(f);
+  }
+  Assert("a failed append is closed off with a newline", newline_terminated);
+
+  // 再追加一条完整记录。上面那半行「hen」要是没被隔断，这里会读出一个
+  // 码为 hen+新码 的假记录。
+  decoder->RecordChoice("szcw", Wide(kPeng2));
+  std::vector<std::wstring> glued = decoder->Decode("henszcw", 9);
+  Assert("the next append does not glue onto the failed one",
+         glued.empty() || Utf8(glued[0]) != kPeng2);
 
   decoder->SetUserTable(std::wstring());
   std::remove(path);

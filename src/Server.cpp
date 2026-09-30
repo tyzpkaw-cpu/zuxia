@@ -101,6 +101,9 @@ public:
 
 STDAPI CClassFactory::QueryInterface(REFIID riid, void **ppvObj)
 {
+    // COM 约定：ppvObj 为空就直接拒，不能往空指针上写。
+    if (ppvObj == NULL)
+        return E_INVALIDARG;
     if (IsEqualIID(riid, IID_IClassFactory) || IsEqualIID(riid, IID_IUnknown))
     {
         *ppvObj = this;
@@ -143,6 +146,12 @@ STDAPI_(ULONG) CClassFactory::Release()
 
 STDAPI CClassFactory::CreateInstance(IUnknown *pUnkOuter, REFIID riid, void **ppvObj)
 {
+    if (ppvObj == NULL)
+        return E_INVALIDARG;
+    *ppvObj = NULL;
+    // 工厂表要是填漏了，这里会是空指针；宁可返回失败，不要直接崩。
+    if (_pfnCreateInstance == NULL)
+        return E_UNEXPECTED;
     return _pfnCreateInstance(pUnkOuter, riid, ppvObj);
 }
 
