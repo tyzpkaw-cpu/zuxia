@@ -89,9 +89,11 @@ class RimeEngine {
   static std::unordered_map<std::wstring, std::vector<std::wstring>>
       code_hints_;
   static std::wstring shared_data_dir_;
-  static std::once_flag decoder_once_;
   static ColumnarDecoder decoder_;
   static bool decoder_ready_;
+  static std::mutex decoder_mutex_;
+  static bool decoder_tried_;
+  static unsigned long decoder_last_try_;
   // 上一帧交出去的解码候选。它们不在 Rime 眼里，所以数字选择键必须由
   // 这里截下来自己处理。
   std::vector<std::wstring> overlay_;

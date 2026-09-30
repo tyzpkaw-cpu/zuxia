@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "RimeEngine.h"
+#include "Diagnostics.h"
 
 namespace {
 
@@ -35,6 +36,14 @@ void Print(const std::wstring& text) {
 }
 
 int failures = 0;
+
+long long FileSize(const std::wstring& path) {
+  WIN32_FILE_ATTRIBUTE_DATA info = {};
+  if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info)) {
+    return -1;  // not created yet, which is a legitimate starting point
+  }
+  return (static_cast<long long>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+}
 
 void Case(zuxia::RimeEngine* engine, const char* keys, int show) {
   engine->Clear();
@@ -231,6 +240,22 @@ int main() {
          OffersText(&engine, "yangzhipengzszmsp", L"杨志鹏"));
   Expect("苏瑶 under `suyaoszcw` (全拼+结构+部件)",
          OffersText(&engine, "suyaoszcw", L"苏瑶"));
+
+  // 这一段防的是一个真发生过的回归：日志每行都从文件第 0 字节写起，互相
+  // 覆盖，文件长度只等于最长那一行，内容是好几行的碎片 —— 看上去还像份
+  // 日志，于是排查真机故障时全靠它，而它在骗人。
+  printf("\nDiagnostic log:\n");
+  const std::wstring log_path = zuxia::LogPath();
+  Expect("log path resolves", !log_path.empty());
+  if (!log_path.empty()) {
+    const long long before = FileSize(log_path);
+    zuxia::LogEvent(L"selftest", L"append check 1");
+    const long long middle = FileSize(log_path);
+    zuxia::LogEvent(L"selftest", L"append check 2");
+    const long long after = FileSize(log_path);
+    Expect("an event makes the log grow", middle > before);
+    Expect("the next event appends rather than overwrites", after > middle);
+  }
 
   // Chinese text wants Chinese marks. The engine is handed the plain ASCII
   // character; librime's punctuator is what turns it into the full-width form.

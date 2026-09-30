@@ -10,6 +10,8 @@
 
 #include <windows.h>
 
+#include <cerrno>
+
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -58,6 +60,10 @@ BOOL ReadFile(HANDLE handle, LPVOID buffer, DWORD to_read, DWORD* read, LPOVERLA
 BOOL CloseHandle(HANDLE handle) {
   return std::fclose(reinterpret_cast<FILE*>(handle)) == 0;
 }
+
+// The decoder reports why a load failed. errno is the nearest equivalent the
+// C library offers, and the value only has to be printable here.
+DWORD GetLastError(void) { return static_cast<DWORD>(errno); }
 
 // --- test cases ------------------------------------------------------------
 static int failures = 0;

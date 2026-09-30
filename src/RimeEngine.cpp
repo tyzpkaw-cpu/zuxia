@@ -37,9 +37,11 @@ HMODULE RimeEngine::runtime_module_ = nullptr;
 RimeApi* RimeEngine::runtime_api_ = nullptr;
 std::string RimeEngine::shared_data_utf8_;
 std::wstring RimeEngine::shared_data_dir_;
-std::once_flag RimeEngine::decoder_once_;
 ColumnarDecoder RimeEngine::decoder_;
 bool RimeEngine::decoder_ready_ = false;
+std::mutex RimeEngine::decoder_mutex_;
+bool RimeEngine::decoder_tried_ = false;
+unsigned long RimeEngine::decoder_last_try_ = 0;
 std::string RimeEngine::user_data_utf8_;
 std::unordered_map<std::wstring, std::vector<std::wstring>>
     RimeEngine::code_hints_;
@@ -92,15 +94,34 @@ bool RimeEngine::IsComposing() const {
   return composing;
 }
 
+// 这些成员是进程级静态量，原来用 std::call_once 包着：一个宿主进程首次加载
+// 失败，它这辈子就再也不试了。而「首次加载失败」最常见的原因恰恰是暂时的 ——
+// 应用正开着的时候升级输入法，数据文件有一瞬间不在。所以失败要能重试，但不能
+// 每次按键都去读一遍 3 MB，于是加了冷却时间。
 bool RimeEngine::EnsureDecoder() {
-  std::call_once(decoder_once_, []() {
-    if (shared_data_dir_.empty()) return;
-    std::filesystem::path path(shared_data_dir_);
-    path /= L"zuxia.decoder.tsv";
-    decoder_ready_ = decoder_.Load(path.wstring());
-    LogEvent(decoder_ready_ ? L"decoder-loaded" : L"decoder-unavailable",
-             path.wstring());
-  });
+  if (decoder_ready_) return true;
+  if (shared_data_dir_.empty()) return false;
+
+  constexpr unsigned long kRetryMs = 30 * 1000;
+  std::lock_guard<std::mutex> guard(decoder_mutex_);
+  if (decoder_ready_) return true;
+  const unsigned long now = GetTickCount();
+  // 无符号回绕相减照样给出正确的间隔，GetTickCount 每 49 天归零不影响这里。
+  if (decoder_tried_ && now - decoder_last_try_ < kRetryMs) return false;
+  decoder_tried_ = true;
+  decoder_last_try_ = now;
+
+  std::filesystem::path path(shared_data_dir_);
+  path /= L"zuxia.decoder.tsv";
+  unsigned long error = 0;
+  decoder_ready_ = decoder_.Load(path.wstring(), &error);
+  if (decoder_ready_) {
+    LogEvent(L"decoder-loaded", path.wstring());
+  } else {
+    wchar_t code[24] = {};
+    swprintf_s(code, L" (0x%08lX)", error);
+    LogEvent(L"decoder-unavailable", path.wstring() + code);
+  }
   return decoder_ready_;
 }
 
@@ -320,7 +341,13 @@ EngineSnapshot RimeEngine::ReadSnapshot(bool handled) {
 
 bool RimeEngine::InitializeRuntime(HMODULE module) {
   std::filesystem::path module_dir(ModuleDirectory(module));
-  LogEvent(L"engine-start", module_dir.wstring());
+  // An application that is already running when the IME is upgraded keeps
+  // the old DLL mapped until it restarts, and then behaves like a version
+  // that is no longer installed. The build stamp is the only thing in the
+  // log that distinguishes which copy a given host actually loaded.
+  const std::string stamp(__DATE__ " " __TIME__);
+  LogEvent(L"engine-start", module_dir.wstring() + L" built " +
+                                std::wstring(stamp.begin(), stamp.end()));
   const std::filesystem::path runtime_path = module_dir / L"rime.dll";
   if (!std::filesystem::exists(runtime_path)) {
     LogEvent(L"engine-failed", L"rime.dll not found beside the text service");

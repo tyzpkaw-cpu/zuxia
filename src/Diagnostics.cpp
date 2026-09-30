@@ -16,6 +16,7 @@ constexpr long long kMaxBytes = 256 * 1024;
 
 std::once_flag g_once;
 std::wstring g_path;
+std::wstring g_host;
 bool g_enabled = true;
 
 // Matches RimeEngine::LocalAppDataDirectory so the log sits beside the Rime
@@ -30,7 +31,21 @@ std::wstring LocalAppData() {
   return std::wstring();
 }
 
+// A text service is loaded into every application that accepts keyboard
+// input, and all of them write to this one file. A bare process id cannot be
+// attributed to an application once that process has exited, which is exactly
+// when the log is read, so the host's file name goes on every line.
+std::wstring HostName() {
+  wchar_t path[MAX_PATH] = {};
+  const DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
+  if (length == 0 || length >= MAX_PATH) return std::wstring(L"?");
+  const std::wstring full(path, length);
+  const size_t slash = full.find_last_of(L'\\');
+  return slash == std::wstring::npos ? full : full.substr(slash + 1);
+}
+
 void Initialize() {
+  g_host = HostName();
   const std::wstring local = LocalAppData();
   if (local.empty()) {
     g_enabled = false;
@@ -77,6 +92,11 @@ void TruncateIfLarge(HANDLE file) {
 
 void DisableLogging() { g_enabled = false; }
 
+std::wstring LogPath() {
+  std::call_once(g_once, Initialize);
+  return g_enabled ? g_path : std::wstring();
+}
+
 void LogEvent(const wchar_t* event, const std::wstring& detail) {
   if (!g_enabled || !event) return;
   std::call_once(g_once, Initialize);
@@ -84,7 +104,9 @@ void LogEvent(const wchar_t* event, const std::wstring& detail) {
 
   std::wstring line = Timestamp();
   wchar_t prefix[32] = {};
-  swprintf_s(prefix, L"  [%lu] ", GetCurrentProcessId());
+  swprintf_s(prefix, L" %lu] ", GetCurrentProcessId());
+  line += L"  [";
+  line += g_host;
   line += prefix;
   line += event;
   if (!detail.empty()) {
@@ -106,6 +128,15 @@ void LogEvent(const wchar_t* event, const std::wstring& detail) {
                             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file != INVALID_HANDLE_VALUE) {
     TruncateIfLarge(file);
+    // FILE_APPEND_DATA forces writes to the end of the file only when it is
+    // the *one* write right requested. FILE_WRITE_DATA is needed for the
+    // SetEndOfFile above, and asking for both silently restores ordinary
+    // write semantics -- and a freshly opened handle starts at offset zero.
+    // Every line therefore landed at offset zero and overwrote the line
+    // before it, leaving a file whose length was that of the longest event
+    // ever logged and whose contents were fragments of several. Seeking to
+    // the end is what makes the append actually append.
+    SetFilePointer(file, 0, nullptr, FILE_END);
     DWORD written = 0;
     WriteFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &written,
               nullptr);

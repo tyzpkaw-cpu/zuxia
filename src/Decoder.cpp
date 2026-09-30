@@ -78,14 +78,22 @@ std::wstring CodePointsToWide(const std::u32string& text) {
   return out;
 }
 
-bool ReadWholeFile(const std::wstring& path, std::string* out) {
+bool ReadWholeFile(const std::wstring& path, std::string* out,
+                   unsigned long* error) {
+  if (error) *error = 0;
   HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
                             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
                             nullptr);
-  if (file == INVALID_HANDLE_VALUE) return false;
+  if (file == INVALID_HANDLE_VALUE) {
+    if (error) *error = GetLastError();
+    return false;
+  }
   LARGE_INTEGER size = {};
   if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 ||
       size.QuadPart > (64 << 20)) {
+    // Empty or implausibly large means a broken install rather than an I/O
+    // fault, and GetLastError would only report whatever came before.
+    if (error) *error = ERROR_FILE_INVALID;
     CloseHandle(file);
     return false;
   }
@@ -93,6 +101,9 @@ bool ReadWholeFile(const std::wstring& path, std::string* out) {
   DWORD read = 0;
   const BOOL ok = ReadFile(file, out->data(),
                            static_cast<DWORD>(out->size()), &read, nullptr);
+  // Read before CloseHandle: closing a handle can overwrite the thread's
+  // last-error value.
+  if (!ok && error) *error = GetLastError();
   CloseHandle(file);
   if (!ok) return false;
   out->resize(read);
@@ -101,10 +112,10 @@ bool ReadWholeFile(const std::wstring& path, std::string* out) {
 
 }  // namespace
 
-bool ColumnarDecoder::Load(const std::wstring& path) {
+bool ColumnarDecoder::Load(const std::wstring& path, unsigned long* error) {
   ready_ = false;
   std::string text;
-  if (!ReadWholeFile(path, &text)) return false;
+  if (!ReadWholeFile(path, &text, error)) return false;
 
   size_t begin = 0;
   while (begin < text.size()) {

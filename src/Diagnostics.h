@@ -27,6 +27,11 @@ void LogEvent(const wchar_t* event, const std::wstring& detail = std::wstring())
 // Convenience for reporting a Win32 or COM failure code.
 void LogFailure(const wchar_t* event, unsigned long code);
 
+// The file LogEvent appends to, or empty when logging is off. Exposed so the
+// self-test can check that appending really appends -- writing every line at
+// offset zero is a failure mode that leaves the log looking plausible.
+std::wstring LogPath();
+
 // Turns logging off for the life of the process. Used when the log file
 // cannot be opened, so a broken log never costs more than the log.
 void DisableLogging();

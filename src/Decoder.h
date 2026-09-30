@@ -24,7 +24,10 @@ namespace zuxia {
 class ColumnarDecoder {
  public:
   // data 目录下的 zuxia.decoder.tsv。失败返回 false，之后 Ready() 恒假。
-  bool Load(const std::wstring& path);
+  // On failure *error, when supplied, receives the Win32 error that stopped
+  // the read. Without it "the table did not load" cannot be told apart from
+  // "the file is not there", which are different faults with different fixes.
+  bool Load(const std::wstring& path, unsigned long* error = nullptr);
   bool Ready() const { return ready_; }
 
   // keys 是已经打出的那串原始按键（只认 a-z）。返回最多 limit 个词，
