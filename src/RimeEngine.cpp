@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cwchar>
 #include <fstream>
 #include <filesystem>
 #include <system_error>
@@ -15,6 +16,32 @@
 namespace zuxia {
 
 namespace {
+
+// 日志是要被用户贴到 issue 里的（docs/REVIEW.md 就明写了「请附 zuxia.log」），
+// 而完整路径里带着 Windows 用户名。把已知的用户目录前缀折回环境变量名 ——
+// 诊断时真正有用的是「在哪一层目录下没找到」，不是那个用户叫什么。
+std::wstring RedactPath(const std::wstring& path) {
+  static const wchar_t* const kVars[] = {L"LOCALAPPDATA", L"APPDATA",
+                                         L"USERPROFILE", L"ProgramFiles",
+                                         L"ProgramFiles(x86)"};
+  std::wstring longest;
+  const wchar_t* shown = nullptr;
+  for (const wchar_t* name : kVars) {
+    wchar_t value[MAX_PATH] = {};
+    const DWORD length = GetEnvironmentVariableW(name, value, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) continue;
+    const std::wstring prefix(value, length);
+    // 最长匹配优先：LOCALAPPDATA 在 USERPROFILE 底下，先中的必须是长的那个。
+    if (prefix.empty() || prefix.size() > path.size()) continue;
+    if (_wcsnicmp(path.c_str(), prefix.c_str(), prefix.size()) != 0) continue;
+    if (prefix.size() > longest.size()) {
+      longest = prefix;
+      shown = name;
+    }
+  }
+  if (longest.empty() || !shown) return path;
+  return L"%" + std::wstring(shown) + L"%" + path.substr(longest.size());
+}
 
 constexpr int kXkBackSpace = 0xff08;
 constexpr int kXkReturn = 0xff0d;
@@ -138,11 +165,11 @@ bool RimeEngine::EnsureDecoder() {
     learned /= L"Zuxia";
     learned /= L"zuxia.decoder.user.tsv";
     decoder_.SetUserTable(learned.wstring());
-    LogEvent(L"decoder-loaded", path.wstring());
+    LogEvent(L"decoder-loaded", RedactPath(path.wstring()));
   } else {
     wchar_t code[24] = {};
     swprintf_s(code, L" (0x%08lX)", error);
-    LogEvent(L"decoder-unavailable", path.wstring() + code);
+    LogEvent(L"decoder-unavailable", RedactPath(path.wstring()) + code);
   }
   return decoder_ready_;
 }
@@ -479,7 +506,7 @@ bool RimeEngine::InitializeRuntime(HMODULE module) {
   // that is no longer installed. The build stamp is the only thing in the
   // log that distinguishes which copy a given host actually loaded.
   const std::string stamp(__DATE__ " " __TIME__);
-  LogEvent(L"engine-start", module_dir.wstring() + L" built " +
+  LogEvent(L"engine-start", RedactPath(module_dir.wstring()) + L" built " +
                                 std::wstring(stamp.begin(), stamp.end()));
   const std::filesystem::path runtime_path = module_dir / L"rime.dll";
   if (!std::filesystem::exists(runtime_path)) {
@@ -521,7 +548,8 @@ bool RimeEngine::InitializeRuntime(HMODULE module) {
 
   std::filesystem::path shared = module_dir.parent_path() / L"data";
   if (!std::filesystem::exists(shared / L"zuxia.schema.yaml")) {
-    LogEvent(L"engine-failed", L"schema not found under " + shared.wstring());
+    LogEvent(L"engine-failed",
+             L"schema not found under " + RedactPath(shared.wstring()));
     return false;
   }
   LoadCodeHints(shared.wstring());

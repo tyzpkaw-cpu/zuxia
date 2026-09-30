@@ -15,6 +15,15 @@ if (-not $InstallPrefix) {
 }
 
 $architectures = if ($Arch -eq 'all') { @('x64', 'x86') } else { @($Arch) }
+
+# 暂存目录先清空。cmake --install 只会覆盖和新增，不会删 —— 上一次构建留下的
+# 陈旧 DLL、改过名的数据文件、试手时手工拷进去的东西都会一路混进安装包。
+# 载荷门禁（scripts/audit-payload.ps1）会拦住一部分，但那是最后一道，不该指望它。
+if (Test-Path $InstallPrefix) {
+    Write-Host "Clearing stage directory $InstallPrefix..."
+    Remove-Item -LiteralPath $InstallPrefix -Recurse -Force
+}
+
 foreach ($item in $architectures) {
     $generatorArch = if ($item -eq 'x64') { 'x64' } else { 'Win32' }
     $buildDir = Join-Path $Root ("build\{0}" -f $item)

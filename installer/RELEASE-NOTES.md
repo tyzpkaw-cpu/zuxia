@@ -70,7 +70,11 @@ Get-FileHash .\ZuxiaSetup-0.2.0.exe -Algorithm SHA256
 
 ## 卸载
 
-控制面板里正常卸载即可，或者跑安装目录里的 `Uninstall.cmd`。
+控制面板（设置 → 应用 → 已安装的应用）里正常卸载即可，或者直接跑安装目录里的
+`ZuxiaUninstall.exe`。
+
+卸载默认**留下** `%LOCALAPPDATA%\Zuxia`（约 15 MB：用户词典、回流表、日志、设置）。
+这样重装之后调频和自造词还在。要彻底清干净，卸载完手动删掉那个文件夹。
 
 ## 审代码的话
 

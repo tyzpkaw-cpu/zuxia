@@ -31,8 +31,25 @@ class CKeyHandlerEditSession final : public CEditSessionBase {
     const int rime_key = zuxia::RimeEngine::VirtualKeyToRimeKey(key_);
     if (!rime_key) return S_FALSE;
 
-    const zuxia::EngineSnapshot snapshot =
-        text_service_->_Engine().ProcessKey(rime_key);
+    zuxia::EngineSnapshot snapshot;
+    try {
+      snapshot = text_service_->_Engine().ProcessKey(rime_key);
+    } catch (...) {
+      // 引擎在中途抛了，它内部状态是什么没人知道。让异常穿出去的话外层
+      // guard 只会 return E_FAIL，而 engine_took_key_ 还是 false，调用方
+      // 会把这一键还给应用 —— 字母落进文档，引擎那边却可能留着半截组字。
+      // 清干净再还，两边至少是一致的。
+      try {
+        text_service_->_Engine().Clear();
+        text_service_->_HideCandidateWindow();
+      } catch (...) {
+      }
+      static LONG thrown = 0;
+      if (WithinLogBudget(&thrown, 8)) {
+        zuxia::LogFailure(L"process-key-threw", 0);
+      }
+      return S_FALSE;
+    }
     if (!snapshot.handled && snapshot.commit.empty() &&
         snapshot.preedit.empty() && !snapshot.composing) {
       // Rime 看过之后什么也没发生，它内部状态没动，这一键还给应用是对的。
@@ -40,8 +57,16 @@ class CKeyHandlerEditSession final : public CEditSessionBase {
     }
     engine_took_key_ = true;
 
-    const HRESULT applied =
-        text_service_->_ApplyRimeSnapshot(cookie, context_, snapshot);
+    HRESULT applied = E_UNEXPECTED;
+    try {
+      applied = text_service_->_ApplyRimeSnapshot(cookie, context_, snapshot);
+    } catch (...) {
+      // 异常从这里穿出去的话，外层 guard 直接 return E_FAIL，底下那段收尾
+      // 就整段被跳过：引擎里留着状态、TSF 组字还挂着、候选窗还开着，而
+      // engine_took_key_ 已经是 true，_InvokeKeyHandler 照样报 S_OK。
+      // 从下一键起两边就错位。在这儿接住，走跟写失败一样的那套收尾。
+      applied = E_UNEXPECTED;
+    }
     if (FAILED(applied)) {
       // 引擎已经吃下这一键，文档却没写成（组字范围失效、宿主拒绝写入）。
       // 这时候把键交还给应用，字母会原样落进文档而 Rime 那边还留着它，
@@ -51,9 +76,13 @@ class CKeyHandlerEditSession final : public CEditSessionBase {
       if (WithinLogBudget(&seen, 8)) {
         zuxia::LogFailure(L"apply-failed", static_cast<unsigned long>(applied));
       }
-      text_service_->_CancelComposition(cookie, context_);
-      text_service_->_Engine().Clear();
-      text_service_->_HideCandidateWindow();
+      try {
+        text_service_->_CancelComposition(cookie, context_);
+        text_service_->_Engine().Clear();
+        text_service_->_HideCandidateWindow();
+      } catch (...) {
+        // 收尾自己抛了就只能到此为止。清了一半也比一点没清好。
+      }
     }
     return applied;
   ZUXIA_COM_GUARD_END(L"CKeyHandlerEditSession::DoEditSession", E_FAIL)

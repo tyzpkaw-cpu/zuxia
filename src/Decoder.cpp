@@ -314,8 +314,13 @@ bool ColumnarDecoder::Load(const std::wstring& path, unsigned long* error) {
     } else if (tag == 'b') {
       const std::vector<char32_t> points = Utf8ToCodePoints(field);
       if (points.size() != 2) continue;
+      // 数据文件被手工改成 nan/inf 的话，这个权重会一路传进 :490 的排序
+      // 比较器，「小于」就不再满足严格弱序，std::sort 可能越界写。拦在这儿。
+      // 上面 'w' 那支不用管：NaN 走 `weight > 1.0` 的 false 分支，取 log(1)=0。
+      double weight_value = atof(rest.c_str());
+      if (!std::isfinite(weight_value)) weight_value = 0.0;
       const uint64_t key = (static_cast<uint64_t>(points[0]) << 32) | points[1];
-      bigram_[key] = static_cast<float>(atof(rest.c_str()));
+      bigram_[key] = static_cast<float>(weight_value);
     }
   }
 

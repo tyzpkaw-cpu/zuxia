@@ -142,7 +142,8 @@ Check '载荷里没有仓库里不存在的数据文件' ($extraData.Count -eq 0
 # 复审判定「出货的 0.2.0 不是 HEAD 编的」，用的就是这个办法：在 DLL 里找
 # 只有新代码才会有的宽字符串。把它变成断言，下次就不用靠人去翻。
 $markers = @('apply-failed', 'edit-session-refused', 'commit-failed',
-             'end-composition-failed', 'composition-dropped')
+             'end-composition-failed', 'composition-dropped',
+             'process-key-threw')
 foreach ($arch in @('x64', 'x86')) {
     $dll = Join-Path $Stage "$arch\ZuxiaTSF.dll"
     if (-not (Test-Path $dll)) { continue }

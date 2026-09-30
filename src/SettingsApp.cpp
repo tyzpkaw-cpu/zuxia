@@ -66,6 +66,14 @@ HFONT g_ui_font = nullptr;
 HFONT g_section_font = nullptr;
 HWND g_main = nullptr;
 
+// 控件全是绝对定位的，所以这两个数就是内容的真实大小（逻辑单位）。
+// 改 BuildControls 里最靠下那一行控件的话，kContentHeight 要跟着改。
+constexpr int kContentWidth = 520;
+constexpr int kContentHeight = 736;
+
+int g_content_px = 0;   // 内容总高，像素。CreateWindow 之前必须填好
+int g_scroll_pos = 0;   // 已经滚上去多少像素
+
 int S(int value) { return MulDiv(value, g_dpi, 96); }
 
 HWND Add(HWND parent, const wchar_t* cls, const wchar_t* text, DWORD style,
@@ -438,6 +446,75 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam,
       PushLookToControls(hwnd);
       return 0;
 
+    case WM_SIZE: {
+      // 屏幕矮的时候窗口装不下全部内容 —— 1366×768 上客户区最多 728 像素，
+      // 而内容要 736，125% 缩放下要 920。以前窗口硬开 736，下面那一排
+      // 「确定／取消」就掉到屏幕外面，用户按不到。现在靠滚动条把它推上来。
+      if (!(GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_VSCROLL)) return 0;
+      const int view = HIWORD(lparam);
+      SCROLLINFO info = {};
+      info.cbSize = sizeof(info);
+      info.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+      info.nMin = 0;
+      info.nMax = g_content_px > 0 ? g_content_px - 1 : 0;
+      info.nPage = static_cast<UINT>(view > 0 ? view : 1);
+      info.nPos = g_scroll_pos;
+      SetScrollInfo(hwnd, SB_VERT, &info, TRUE);
+      // 窗口被拉高之后原来的滚动量可能已经超界，得把内容跟着推回去，
+      // 否则底部会留一块空白而顶上的内容还在窗口外。
+      const int limit = g_content_px > view ? g_content_px - view : 0;
+      if (g_scroll_pos > limit) {
+        ScrollWindowEx(hwnd, 0, g_scroll_pos - limit, nullptr, nullptr, nullptr,
+                       nullptr, SW_SCROLLCHILDREN | SW_INVALIDATE | SW_ERASE);
+        g_scroll_pos = limit;
+        SetScrollPos(hwnd, SB_VERT, g_scroll_pos, TRUE);
+      }
+      return 0;
+    }
+
+    case WM_VSCROLL: {
+      if (!(GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_VSCROLL)) return 0;
+      SCROLLINFO info = {};
+      info.cbSize = sizeof(info);
+      info.fMask = SIF_ALL;
+      if (!GetScrollInfo(hwnd, SB_VERT, &info)) return 0;
+      const int page = static_cast<int>(info.nPage);
+      const int limit = info.nMax + 1 > page ? info.nMax + 1 - page : 0;
+      int want = g_scroll_pos;
+      switch (LOWORD(wparam)) {
+        case SB_TOP: want = 0; break;
+        case SB_BOTTOM: want = limit; break;
+        case SB_LINEUP: want -= S(28); break;
+        case SB_LINEDOWN: want += S(28); break;
+        case SB_PAGEUP: want -= page; break;
+        case SB_PAGEDOWN: want += page; break;
+        case SB_THUMBTRACK:
+        case SB_THUMBPOSITION: want = info.nTrackPos; break;
+        default: return 0;
+      }
+      if (want < 0) want = 0;
+      if (want > limit) want = limit;
+      if (want == g_scroll_pos) return 0;
+      ScrollWindowEx(hwnd, 0, g_scroll_pos - want, nullptr, nullptr, nullptr,
+                     nullptr, SW_SCROLLCHILDREN | SW_INVALIDATE | SW_ERASE);
+      g_scroll_pos = want;
+      SetScrollPos(hwnd, SB_VERT, g_scroll_pos, TRUE);
+      return 0;
+    }
+
+    case WM_MOUSEWHEEL: {
+      // 有滚动条就该能用滚轮，不然用户会以为窗口卡住了。没滚动条就别管。
+      if (!(GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_VSCROLL)) break;
+      const int notches = GET_WHEEL_DELTA_WPARAM(wparam) / WHEEL_DELTA;
+      for (int i = 0; i < notches; ++i) {
+        SendMessageW(hwnd, WM_VSCROLL, SB_LINEUP, 0);
+      }
+      for (int i = 0; i > notches; --i) {
+        SendMessageW(hwnd, WM_VSCROLL, SB_LINEDOWN, 0);
+      }
+      return 0;
+    }
+
     case WM_DRAWITEM: {
       const DRAWITEMSTRUCT* item =
           reinterpret_cast<const DRAWITEMSTRUCT*>(lparam);
@@ -541,6 +618,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam,
           const std::wstring path = zuxia::SettingsFilePath();
           ShellExecuteW(hwnd, L"open", L"notepad.exe", path.c_str(), nullptr,
                         SW_SHOWNORMAL);
+          // 文件从这一刻起可能被用户在记事本里手改。再拿启动时的快照去
+          // 「取消回写」就会把手改整份盖掉，用户根本不知道发生了什么。
+          // 交出去之后就不再声称知道文件里是什么：基线对齐到刚写的值，
+          // 并撤掉回写标志。之后按取消只是「界面上的改动不生效」。
+          g_original = g_look;
+          g_applied = false;
           return 0;
         }
         case kApply:
@@ -633,12 +716,48 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   wc.hIconSm = wc.hIcon;
   if (!RegisterClassExW(&wc)) return 1;
 
-  RECT want = {0, 0, S(520), S(736)};
-  AdjustWindowRect(&want, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, FALSE);
-  g_main = CreateWindowExW(
-      0, kClassName, kTitle, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-      CW_USEDEFAULT, CW_USEDEFAULT, want.right - want.left,
-      want.bottom - want.top, nullptr, nullptr, instance, nullptr);
+  // 内容高度在 WM_CREATE／WM_SIZE 之前就得定下来 —— CreateWindowExW 还没
+  // 返回，那两条消息已经发出去了。
+  g_content_px = S(kContentHeight);
+  g_scroll_pos = 0;
+
+  RECT work = {0, 0, 0, 0};
+  if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+    work.left = 0;
+    work.top = 0;
+    work.right = GetSystemMetrics(SM_CXSCREEN);
+    work.bottom = GetSystemMetrics(SM_CYSCREEN);
+  }
+  const int work_w = work.right - work.left;
+  const int work_h = work.bottom - work.top;
+
+  DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
+  int client_h = g_content_px;
+  int client_w = S(kContentWidth);
+
+  RECT probe = {0, 0, client_w, client_h};
+  AdjustWindowRect(&probe, style, FALSE);
+  const int chrome_h = (probe.bottom - probe.top) - client_h;
+  if (work_h > 0 && (probe.bottom - probe.top) > work_h) {
+    // 装不下。客户区压到工作区放得下的高度，剩下的交给滚动条，
+    // 再把滚动条自己占掉的宽度补上（AdjustWindowRect 不管它）。
+    client_h = work_h - chrome_h;
+    const int floor_h = S(280);
+    if (client_h < floor_h) client_h = floor_h;
+    style |= WS_VSCROLL;
+    client_w += GetSystemMetrics(SM_CXVSCROLL);
+  }
+
+  RECT want = {0, 0, client_w, client_h};
+  AdjustWindowRect(&want, style, FALSE);
+  const int window_w = want.right - want.left;
+  const int window_h = want.bottom - want.top;
+  // 自己居中，别用 CW_USEDEFAULT —— 那个会把窗口放在工作区里偏下的位置，
+  // 高度刚好等于工作区时底边还是会露到屏幕外。
+  int x = work.left + (work_w > window_w ? (work_w - window_w) / 2 : 0);
+  int y = work.top + (work_h > window_h ? (work_h - window_h) / 2 : 0);
+  g_main = CreateWindowExW(0, kClassName, kTitle, style, x, y, window_w,
+                           window_h, nullptr, nullptr, instance, nullptr);
   if (!g_main) return 1;
   ShowWindow(g_main, show);
   UpdateWindow(g_main);
