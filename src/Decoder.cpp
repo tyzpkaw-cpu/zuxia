@@ -607,11 +607,27 @@ std::vector<std::wstring> ColumnarDecoder::SearchLongestPrefix(
       keys.size() > kMaxFallbackTail ? keys.size() - kMaxFallbackTail : 2;
   for (size_t length = keys.size() - 1; length >= shortest; --length) {
     if (length < 2) break;
-    result = Search(keys.substr(0, length), limit);
-    if (!result.empty()) {
-      if (tail) *tail = keys.substr(length);
-      return result;
+    const std::string prefix = keys.substr(0, length);
+    result = Search(prefix, limit);
+    if (result.empty()) continue;
+    // 回流也得跟着退。选中兜底候选时记下的是这段前缀（见
+    // RimeEngine::FillDecodedCandidates 里的 overlay_code_），所以查也必须
+    // 按前缀查 —— 不然「学过」和「查得到」对不上，用户教过一次的词在同一
+    // 串码上第二次还是不排前面。
+    const auto learned = user_.find(prefix);
+    if (learned != user_.end()) {
+      size_t front = 0;
+      for (const std::wstring& word : learned->second) {
+        if (front >= kUserRecall) break;
+        auto at = std::find(result.begin(), result.end(), word);
+        if (at != result.end()) result.erase(at);
+        result.insert(result.begin() + front, word);
+        ++front;
+      }
+      if (result.size() > limit) result.resize(limit);
     }
+    if (tail) *tail = keys.substr(length);
+    return result;
   }
   result.clear();
   return result;

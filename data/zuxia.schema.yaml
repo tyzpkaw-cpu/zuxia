@@ -41,6 +41,12 @@ engine:
     - uniquifier
 
 # Shift tap switches between Chinese and Western input.
+#
+# 注意：下面这一段对足下是不生效的。中/西切换是在 TSF 层用 TF_MOD_ON_KEYUP
+# 预留键做的（src/KeyEventSink.cpp），Shift 和 Caps Lock 根本不会作为按键交
+# 给 librime，所以 ascii_composer 永远看不到它们。留着是为了直接拿 Rime 跑
+# 这份方案时行为一致 —— 改这里不会影响输入法里的 Shift 行为，别在这里找
+# 「打完标点变英文」那个毛病，它在 KeyEventSink.cpp。
 ascii_composer:
   good_old_caps_lock: true
   switch_key:

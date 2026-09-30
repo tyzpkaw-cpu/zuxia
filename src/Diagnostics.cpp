@@ -94,7 +94,11 @@ std::string Narrow(const std::wstring& text) {
 // misbehaving, and the run-up to the failure is the part worth reading. So
 // the last kKeepBytes are kept and the rest dropped, starting at the first
 // line boundary so the file never opens on half a line.
-void TrimIfLarge(HANDLE file) {
+void TrimIfLarge(HANDLE file, bool exclusive) {
+  // 追加是原子的，整体重写不是。没拿到那把跨进程互斥量就别动文件结构 ——
+  // 另一个宿主进程可能正在往里追加，两边一撞，日志就成了碎片，而那正是
+  // 这把锁存在的理由。这一轮不裁，下一轮拿到锁再说。
+  if (!exclusive) return;
   LARGE_INTEGER size = {};
   if (!GetFileSizeEx(file, &size) || size.QuadPart < kMaxBytes) return;
 
@@ -159,10 +163,15 @@ void LogEvent(const wchar_t* event, const std::wstring& detail) {
 
   HANDLE mutex = CreateMutexW(nullptr, FALSE, kMutexName);
   bool held = false;
+  // 连互斥量都建不出来（权限不足之类），就没有跨进程协调这回事了 —— 这时
+  // 候当成独占，否则日志再也不会被裁，无限长下去。真正危险的是「有这把锁
+  // 但等超时」：那说明另一个进程正拿着它，那种情况绝不能动文件结构。
+  bool exclusive = mutex == nullptr;
   if (mutex) {
     const DWORD waited = WaitForSingleObject(mutex, 2000);
     // WAIT_ABANDONED 也是拿到了（上一个持有者崩在里面），同样得释放。
     held = waited == WAIT_OBJECT_0 || waited == WAIT_ABANDONED;
+    exclusive = held;
   }
 
   // FILE_WRITE_DATA as well: TrimIfLarge rewrites the tail and calls
@@ -174,7 +183,7 @@ void LogEvent(const wchar_t* event, const std::wstring& detail) {
                             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file != INVALID_HANDLE_VALUE) {
     g_open_failures = 0;
-    TrimIfLarge(file);
+    TrimIfLarge(file, exclusive);
     // FILE_APPEND_DATA forces writes to the end of the file only when it is
     // the *one* write right requested. FILE_WRITE_DATA is needed for the
     // SetEndOfFile above, and asking for both silently restores ordinary

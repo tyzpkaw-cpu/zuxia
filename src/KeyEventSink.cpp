@@ -99,6 +99,9 @@ BOOL CTextService::_IsKeyEaten(ITfContext* /*context*/, WPARAM key) try {
 
 STDMETHODIMP CTextService::OnSetFocus(BOOL foreground) ZUXIA_COM_GUARD_BEGIN
   if (!foreground) _HideCandidateWindow();
+  // 按住 Shift 的时候切走窗口，那次 Shift 松开可能落到别的线程去，标志位
+  // 会一直挂着，白吞掉下一次真正的轻敲。换焦点就当这一轮结束。
+  _shiftUsedWithKey = false;
   return S_OK;
 ZUXIA_COM_GUARD_END(L"CTextService::OnSetFocus(bool)", S_OK)
 
@@ -195,10 +198,13 @@ void CTextService::_UninitKeyEventSink() {
   }
 }
 
-// A tapped Shift switches between Chinese and Western input. TSF delivers
-// this through TF_MOD_ON_KEYUP, which only fires when Shift was
-// pressed and released with no other key in between -- so Shift+letter and
-// Shift+arrow keep working normally and no editor shortcut is shadowed.
+// A tapped Shift switches between Chinese and Western input, delivered through
+// a TF_MOD_ON_KEYUP preserved key.
+//
+// 注意：TSF 的文档说这个只在「Shift 按下又松开、中间没有别的键」时触发。
+// 真机把这个说法证伪了 —— 被我们自己吃掉的键不会作为普通按键回到 TSF 的
+// 账上，于是 Shift＋标点之后它照样触发。别删 _NoteKeyForShiftTap，那个标志
+// 位就是补这个的；删了就回到「打一个中文标点忽然变英文」。
 BOOL CTextService::_InitPreservedKey() {
   if (!_pThreadMgr) return FALSE;
   ITfKeystrokeMgr* manager = nullptr;

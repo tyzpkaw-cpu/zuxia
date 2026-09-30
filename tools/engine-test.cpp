@@ -16,6 +16,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -381,6 +382,44 @@ int main() {
     char label[72] = {};
     sprintf_s(label, "%s becomes its Chinese form", mark.name);
     Expect(label, snapshot.commit == mark.want);
+  }
+
+  // Shift＋数字。中文的 ！（） 三个标点都在数字键上，得按住 Shift 才出得
+  // 来。VirtualKeyToRimeKey 原先对数字键无条件返回数字，于是想打「（」得到
+  // 的是「9」—— 组字中那一下还会被当成选第 9 个候选。这一段用
+  // SetKeyboardState 模拟按住 Shift，再看送到引擎的到底是什么。
+  printf("\nShift+digit is punctuation, not a digit:\n");
+  {
+    BYTE saved[256] = {};
+    if (GetKeyboardState(saved)) {
+      BYTE shifted[256] = {};
+      memcpy(shifted, saved, sizeof(shifted));
+      shifted[VK_SHIFT] = 0x80;
+      shifted[VK_LSHIFT] = 0x80;
+      SetKeyboardState(shifted);
+      const bool punct = zuxia::RimeEngine::IsPunctuationKey('9');
+      const int nine = zuxia::RimeEngine::VirtualKeyToRimeKey('9');
+      const int one = zuxia::RimeEngine::VirtualKeyToRimeKey('1');
+      SetKeyboardState(saved);
+      // punct 为真就说明模拟的 Shift 真起了作用（数字键打出了非数字），
+      // 这一步与被测的改动无关，所以拿它当闸门是可靠的。
+      if (!punct) {
+        printf("  (simulated Shift had no effect here; skipped)\n");
+      } else {
+        printf("  Shift+9 -> %d '%c', Shift+1 -> %d '%c'\n", nine,
+               nine ? nine : '?', one, one ? one : '?');
+        Expect("Shift+9 reaches the engine as '(' not '9'", nine == '(');
+        Expect("Shift+1 reaches the engine as '!' not '1'", one == '!');
+        engine.Clear();
+        const zuxia::EngineSnapshot bracket = engine.ProcessKey(nine, 0);
+        Expect("and comes out as （", bracket.commit == L"（");
+        engine.Clear();
+      }
+      Expect("a bare 9 is still the digit 9",
+             zuxia::RimeEngine::VirtualKeyToRimeKey('9') == '9');
+    } else {
+      printf("  (keyboard state unavailable; skipped)\n");
+    }
   }
 
   printf("\nWestern-mode toggle:\n");

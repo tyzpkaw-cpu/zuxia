@@ -207,6 +207,13 @@ void RimeEngine::FillDecodedCandidates(EngineSnapshot* out) {
     Candidate one;
     one.text = word;
     one.label = std::to_wstring(taken + overlay_.size() + 1);
+    // 兜底候选只吃掉码的前一段。在候选窗里把剩下那几位标出来，用户看一眼
+    // 就知道「选它不会把 rm 吃掉，rm 还留着接着打」。不标的话这些候选看
+    // 上去与精确命中的一模一样，选下去多出一截码会让人以为输入法在乱跳。
+    if (!tail.empty()) {
+      one.comment = L"…";
+      one.comment.append(tail.begin(), tail.end());
+    }
     out->candidates.push_back(one);
     overlay_.push_back(word);
   }
@@ -599,7 +606,13 @@ int RimeEngine::VirtualKeyToRimeKey(WPARAM virtual_key) {
     return static_cast<int>(virtual_key - 'A' + 'a');
   }
   if (virtual_key >= '0' && virtual_key <= '9') {
-    return static_cast<int>(virtual_key);
+    // 数字键按住 Shift 打出来的是标点：！＠＃￥％……＆＊（）。原先这里
+    // 无条件返回数字，于是想打「（」得到的是「9」—— 组字中那一下还会被
+    // 当成选第 9 个候选。中文常用的 ！（） 三个标点全在这条路上，所以必须
+    // 像标点那样问一次键盘布局。问不出来（布局古怪、ToUnicodeEx 给多个
+    // 字符）才退回数字本身。
+    const int ch = AsciiForKey(virtual_key);
+    return ch ? ch : static_cast<int>(virtual_key);
   }
   switch (virtual_key) {
     case VK_SPACE:

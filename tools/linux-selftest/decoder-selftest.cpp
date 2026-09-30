@@ -280,6 +280,30 @@ static void CheckRecall(zuxia::ColumnarDecoder* decoder) {
   words = decoder->Decode(kCode, 9);
   Assert("with the table detached, nothing is prepended",
          !words.empty() && Utf8(words[0]) == kPeng);
+
+  // 回流要跟着兜底一起退。兜底时记下的是那段前缀，所以查也必须按前缀
+  // 查 —— 不然用户教过一次的词，在同一串打错的码上第二次还是不排前面。
+  std::remove(path);
+  decoder->SetUserTable(wide);
+  const char* kZuxia = "zuxiasdk";
+  const char* kDead = "zuxiasdkh";   // 多打了一个 h，靠兜底退回 zuxiasdk
+  const char* kZu = "\xe8\xb6\xb3\xe4\xb8\x8b";   // 足下
+  std::string tail;
+  words = decoder->Decode(kDead, 9, &tail);
+  Assert("the dead code falls back and reports its tail",
+         !words.empty() && Utf8(words[0]) == kZu && tail == "h");
+  // 从兜底候选里选的是「前缀 -> 词」这一条，RimeEngine 就是这么记的。
+  decoder->RecordChoice(kZuxia, Wide(kZu));
+  words = decoder->Decode(kDead, 9, &tail);
+  Assert("a pick learned on the prefix still leads on the dead code",
+         !words.empty() && Utf8(words[0]) == kZu && tail == "h");
+  bool dup = false;
+  for (size_t i = 0; i < words.size(); ++i)
+    for (size_t j = i + 1; j < words.size(); ++j)
+      if (words[i] == words[j]) dup = true;
+  Assert("no duplicate between the learned pick and the fallback list", !dup);
+  decoder->SetUserTable(std::wstring());
+  std::remove(path);
 }
 
 int main(int argc, char** argv) {
