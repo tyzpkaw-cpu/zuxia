@@ -11,6 +11,8 @@ name: build-installer
 on:
   push:
     branches: [master]
+    # 打 v* 标签会额外发一个 Release，见最后一步。
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -65,6 +67,11 @@ jobs:
     name: 编译与打包
     needs: data
     runs-on: windows-latest
+    # 只为最后那一步发 Release 用。GitHub 不支持按条件给权限，所以这个
+    # job 一直带着写权限 —— 这也是下面宁可用自带的 gh 命令、不引第三方
+    # action 的原因：能动仓库的东西越少越好。
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -145,3 +152,23 @@ jobs:
           path: dist/Zuxia
           if-no-files-found: error
           retention-days: 7
+
+      # 上面那两份产物要登录 GitHub 才能下，而且 30 天后就没了。请人试用
+      # 得有个不用登录、不会过期的链接，所以打 v* 标签时顺手发一个 Release。
+      # 用 runner 自带的 gh，不引第三方 action。
+      - name: 发布 Release（仅 v* 标签）
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZX_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          $v = $env:ZX_VERSION
+          gh release create $env:GITHUB_REF_NAME `
+            "dist/ZuxiaSetup-$v.exe" `
+            "dist/ZuxiaSetup-$v.exe.sha256" `
+            "dist/Zuxia/MANIFEST.sha256" `
+            "dist/Zuxia/engine-test.log" `
+            --title "足下输入法 $v" `
+            --notes-file installer/RELEASE-NOTES.md
+          if ($LASTEXITCODE -ne 0) { throw "gh release create 失败" }
