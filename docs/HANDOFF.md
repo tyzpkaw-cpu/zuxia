@@ -3,14 +3,11 @@
 > 交接时间：2026-09-29（UTC）｜来源：Notion AI 会话交接
 > 仓库：https://github.com/tyzpkaw-cpu/zuxia （公开）
 > 读者：接手工作的 AI 助手或工程师。用户本人不懂代码——向他汇报请用「可整块粘贴」的命令，并如实标注未验证项。
->
-> 最近更新：2026-09-29 —— 第四节收尾清单的 1／2／4／5 项已做掉（含一处审计误报的修正），
-> 只剩「Windows／MSVC 真编译」这一关，已改由 CI 的 `pull_request` 触发器来跑。
 
 ## 一、30 秒速览
 - **足下输入法**：Windows 中文输入法（TSF 文本服务，x64 + x86，内嵌 librime 1.17.0，自写单文件安装器），从「应物输入法」（衡码）移植，可与应物并存。
 - **master 已完成**：任务栏「足」图标、词组码表（约 12 万词）、独立设置界面（ZuxiaSettings.exe）。
-- **进行中**：列式解码器（用户点名要 `yangzhipengzszmsp` 这种打法）。代码已写好、Linux 侧全部验证过，在分支 **`decoder-wip`** 上，**未合并**（已开 PR，让 CI 去跑 Windows 编译）。收尾清单见第四节。
+- **进行中**：列式解码器（用户点名要 `yangzhipengzszmsp` 这种打法）。代码已写好、大部分验证过，在分支 **`decoder-wip`** 上，**未合并**。收尾清单见第四节。
 - 用户机器：Windows 11；仓库克隆在 `C:\Users\拭有舞月厢\Desktop\df\yingwu-zuxia`；用 Windows PowerShell 5.1（**没有 `&&`**，命令要整块粘贴、逐行执行）。
 - （若沿用 Notion AI 沙箱）Linux、无外网；仓库副本 `/data/proj/yingwu-zuxia`；只有 g++，没有 MSVC/mingw。
 
@@ -38,7 +35,7 @@
 - `docs/`：本项目文档（含 `列式解码.md`）。
 
 ## 四、进行中的工作：分支 `decoder-wip`（重点）
-分支基于 master `75ae9e0`。相对 master 的改动共 **18 个文件**（两个生成物本身不在 git 里；`docs/HANDOFF.md` 是把 master 那一版接过来再更新的，所以 PR 的 diff 里不会出现「删掉手册」）：
+分支基于 master `75ae9e0`。相对 master 的改动共 **15 个文件**（两个生成物本身不在 git 里）：
 
 ### 4.1 改了什么
 1. `data-tools/generate_phrases.py`：新增 `write_decoder_data()`，产出 `data/zuxia.decoder.tsv`（3,097,914 字节）。四段格式（每行首列是段标）：`s` 合法音节 / `w` 字+权重 / `c` 码→字（含两条补位规则）/ `b` 二元组（前 20 万词统计，161,558 条）。
@@ -47,9 +44,6 @@
 4. `tools/linux-selftest/`（新）：`windows.h` 桩 + `decoder-selftest.cpp`，在 Linux 上直接编 `Decoder.cpp` 跑 11 条断言。
 5. `data-tools/audit_zuxia.py`：安装载荷检查的数据文件集合从 `*.yaml` 扩到 `*.yaml + *.tsv`。
 6. 配套清单：`CMakeLists.txt`（源文件 +Decoder.cpp；install 加 `PATTERN "*.tsv"`；缺 decoder.tsv 的 FATAL_ERROR 守卫）、`tools/build-engine-test.ps1`（+src\Decoder.cpp）、`.gitignore`（+/data/zuxia.decoder.tsv）、`installer/setup/setup.cpp` 与 `installer/Install-Zuxia.ps1`（载荷清单 +zuxia.decoder.tsv）、`.github/workflows/build-installer.yml`（ubuntu job 加「C++ 解码器自检（Linux）」一步）、`scripts/verify-install.ps1`（安装后核对的数据文件清单 +extended/+decoder）。
-7. `tools/engine-test.cpp`（2026-09-29 补）：加 2 条解码器断言 —— `yangzhipengzszmsp`→杨志鹏、`suyaoszcw`→苏瑶，外加一个 `OffersText()` 辅助函数。**不能用现成的 `Offers()`**：它是借「注释找不找得到」判断在不在，而解码器给的候选不经过 `AnnotateCode`，注释是空的。
-8. `data-tools/audit_zuxia.py`（2026-09-29 补）：版本号残留检查改成 `git grep -l -F`。原来按正则找 `0.1.0`，`.` 通配任意字符，把新 `Decoder.cpp` 里的 `0x10000` 误报成「残留的旧版本号」—— 是误报，不是真有残留。
-9. `README.md`（2026-09-29 补）：§2.8 删掉「词表外只有全拼档打得出」「解码器还没进 C++」的旧表述；第七节状态表两行改写；「下一步」第 3 条改成「把 decoder-wip 合进 master」。
 
 ### 4.2 已验证 / 未验证（别混淆）
 **已验证（沙箱里跑过，可复现）**：
@@ -60,28 +54,19 @@
 - 接口核对：`get_input` / `clear_composition` 等都在 librime 1.17 头文件里；`EngineSnapshot` / `Candidate` 字段、字符字面量逐一核对；
 - RimeEngine.cpp 近似语法检查：**新增代码区域零错误**；剩余报错全部来自 MSVC 与 gcc 的环境差异（Linux 下 `std::filesystem::path::c_str()` 是窄字符、MSVC secure CRT 模板重载）与沙箱桩头缺声明——不是接线问题。
 
-**2026-09-29 在新沙箱里逐条复现过（Linux、有外网、只有 g++ 11.5）**：
-- C++ 自检 **11/11**；
-- 生成器：119,964 词 / 421,131 行 / 12,167,874 字节，解码器 3,097,914 字节 —— 与上面的数字逐个吻合；重跑两次 sha256 一致（`e99c3b3a…` extended / `c622eadc…` decoder）；
-- `decode_zuxia.py --selftest` 11/11；
-- `audit_zuxia.py --regen`：先报 1 项失败（就是 4.1 第 8 条那个误报），修掉后 **ALL CHECKS PASSED**；
-- `engine-test.cpp` 新增断言的语法：拿仓库自带的 rime 头 ＋ `tools/linux-selftest/windows.h` 做 `-fsyntax-only` 前后对照，**新增代码零新增错误**（前后都只剩 `sprintf_s`、`SetConsoleOutputCP` 两个 MSVC 专有 API 报错，是桩头缺声明）；
-- `Decoder.cpp` 的平台相关调用只有一个 `CreateFileW`，没有任何会被 MSVC 拒掉的弃用 CRT 函数；`<mutex>` 等头文件都显式包含了（gcc 会传递包含、MSVC 不会，这是最常见的一类「Linux 过了 Windows 炸」）。
-
 **未验证（接手后第一件事）**：
-- **Windows / MSVC 下从未编译过**（沙箱只有 g++）——近似检查和静态审查都不能替代真编译。**已开 PR 交给 CI 跑**：工作流 `on:` 里有 `pull_request`，Windows job 会真编译 ＋ 跑 engine-test ＋ 打包；以 Actions 的结果为准；
-- 新加的那 2 条 engine-test 解码断言**只过了语法检查，从未真跑**。它们依赖「Rime 对这整串码一个候选都给不出」这个前提 —— 这个前提是真是假，只有 engine-test 在 Windows 上跑起来才知道；
+- **Windows / MSVC 下从未编译过**（沙箱只有 g++）——近似检查不能替代真编译；
+- `engine-test` 尚未加解码断言（见 4.3 第 4 条）；
+- README / 文档还没更新（见 4.3 第 5 条）；
 - 从未真机安装验收过（所有版本都没有）。
 
 ### 4.3 下一步清单（按顺序）
-1. ~~检出分支~~ —— **已做**。
-2. ~~Linux 复跑解码器自检~~ —— **已做，11/11**（2026-09-29）。
-3. **Windows 编译（关键，仍未过 —— 现在唯一的真拦路虎）**。两条路，哪条先绿都算：
-   - **CI（推荐，不用碰用户的机器）**：PR 已开（`decoder-wip` → `master`）。Windows job 会 setup-python → generate → fetch-librime → `build.ps1` → `engine-test` → make-setup，产物在 Actions 的 Artifacts 里。
-   - 本机：`pwsh scripts/fetch-librime.ps1`，然后 `pwsh scripts/build.ps1 -Arch all -Configuration Release`；有编译错误优先修 `src/RimeEngine.cpp` 的接线。再 `pwsh tools/build-engine-test.ps1 -Arch x64`。
-4. ~~engine-test 加断言~~ —— **已做**（2 条，见 4.1 第 7 条）。注意 engine-test 要从 `dist\Zuxia\x64` 这类有 `..\data` 的目录跑；`data/zuxia.decoder.tsv` 须先由生成器产出。**断言本身还没真跑过。**
-5. ~~更新文档~~ —— **已做**（README §2.8、第七节状态表两行、「下一步」第 3 条）。
-6. 跑 CI 全套：ubuntu job（generate → audit → decode → C++ 自检 → measure）与 Windows job（generate → build → engine-test → 安装包）都要绿，再合并。
+1. 检出分支：`git fetch && git checkout decoder-wip`（或在 GitHub 上直接查看）。
+2. Linux 上先复跑解码器自检（4.4 第 1 条），确认 11/11。
+3. **Windows 编译（关键）**：`pwsh scripts/fetch-librime.ps1`，然后 `pwsh scripts/build.ps1 -Arch all -Configuration Release`；有编译错误优先修 `src/RimeEngine.cpp` 的接线。再 `pwsh tools/build-engine-test.ps1 -Arch x64`。
+4. `tools/engine-test.cpp` 加断言（照现有 `Expect(...)` 风格）：`yangzhipengzszmsp` 出「杨志鹏」、`suyaoszcw` 出「苏瑶」。注意：engine-test 要从 `dist\Zuxia\x64` 这类有 `..\data` 的目录跑；`data/zuxia.decoder.tsv` 须先由生成器产出。
+5. 更新文档：README §2.8（删掉「词组只认第一个部件」「词表外打不出来」的旧限制表述）、§七状态表（「列式解码器：C++ 版未移植」→ 已移植）、「下一步」列表第 3 条。
+6. 跑 CI 全套（合并到 master 或开 PR）：ubuntu job（generate → audit → decode → C++ 自检 → measure）与 Windows job（generate → build → engine-test → 安装包）都要绿。
 7. 让用户按第七节安装验收（新包在 CI Artifacts，**别用 release/ 里的旧包**）。
 
 ### 4.4 可复现的验证命令（Linux / 沙箱）
