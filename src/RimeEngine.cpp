@@ -31,11 +31,19 @@ constexpr int kXkDelete = 0xffff;
 
 }  // namespace
 
-std::once_flag RimeEngine::runtime_once_;
+std::mutex RimeEngine::runtime_mutex_;
+bool RimeEngine::runtime_tried_ = false;
+unsigned long RimeEngine::runtime_last_try_ = 0;
 bool RimeEngine::runtime_ready_ = false;
 HMODULE RimeEngine::runtime_module_ = nullptr;
 RimeApi* RimeEngine::runtime_api_ = nullptr;
 std::string RimeEngine::shared_data_utf8_;
+std::wstring RimeEngine::shared_data_dir_;
+ColumnarDecoder RimeEngine::decoder_;
+bool RimeEngine::decoder_ready_ = false;
+std::mutex RimeEngine::decoder_mutex_;
+bool RimeEngine::decoder_tried_ = false;
+unsigned long RimeEngine::decoder_last_try_ = 0;
 std::string RimeEngine::user_data_utf8_;
 std::unordered_map<std::wstring, std::vector<std::wstring>>
     RimeEngine::code_hints_;
@@ -46,9 +54,22 @@ RimeEngine::~RimeEngine() { Shutdown(); }
 
 bool RimeEngine::Initialize(HMODULE module) {
   if (Ready()) return true;
-  std::call_once(runtime_once_, [this, module]() {
-    runtime_ready_ = InitializeRuntime(module);
-  });
+  // EnsureDecoder 那个坑的双胞胎，而且更狠：这里管的是整个 rime.dll 加载和
+  // 数据目录解析，原来用 std::call_once 包着，而 runtime_ready_ 是进程级静态
+  // 量 —— 一个宿主进程首次初始化失败，它这辈子就再也没有输入法，连重试都不
+  // 会。而首次失败的常见原因恰恰是暂时的：升级时 rime.dll 正被替换。失败要
+  // 能重试，带冷却，免得一个坏安装每次按键都重来一遍。
+  if (!runtime_ready_) {
+    constexpr unsigned long kRetryMs = 30 * 1000;
+    std::lock_guard<std::mutex> guard(runtime_mutex_);
+    if (!runtime_ready_) {
+      const unsigned long now = GetTickCount();
+      if (runtime_tried_ && now - runtime_last_try_ < kRetryMs) return false;
+      runtime_tried_ = true;
+      runtime_last_try_ = now;
+      runtime_ready_ = InitializeRuntime(module);
+    }
+  }
   if (!runtime_ready_) return false;
 
   api_ = runtime_api_;
@@ -88,10 +109,175 @@ bool RimeEngine::IsComposing() const {
   return composing;
 }
 
+// 这些成员是进程级静态量，原来用 std::call_once 包着：一个宿主进程首次加载
+// 失败，它这辈子就再也不试了。而「首次加载失败」最常见的原因恰恰是暂时的 ——
+// 应用正开着的时候升级输入法，数据文件有一瞬间不在。所以失败要能重试，但不能
+// 每次按键都去读一遍 3 MB，于是加了冷却时间。
+bool RimeEngine::EnsureDecoder() {
+  if (decoder_ready_) return true;
+  if (shared_data_dir_.empty()) return false;
+
+  constexpr unsigned long kRetryMs = 30 * 1000;
+  std::lock_guard<std::mutex> guard(decoder_mutex_);
+  if (decoder_ready_) return true;
+  const unsigned long now = GetTickCount();
+  // 无符号回绕相减照样给出正确的间隔，GetTickCount 每 49 天归零不影响这里。
+  if (decoder_tried_ && now - decoder_last_try_ < kRetryMs) return false;
+  decoder_tried_ = true;
+  decoder_last_try_ = now;
+
+  std::filesystem::path path(shared_data_dir_);
+  path /= L"zuxia.decoder.tsv";
+  unsigned long error = 0;
+  decoder_ready_ = decoder_.Load(path.wstring(), &error);
+  if (decoder_ready_) {
+    // 回流表。与只读的主表分开，放在用户自己的目录里，升级不会覆盖它。
+    std::filesystem::path learned(LocalAppDataDirectory());
+    learned /= L"Zuxia";
+    learned /= L"zuxia.decoder.user.tsv";
+    decoder_.SetUserTable(learned.wstring());
+    LogEvent(L"decoder-loaded", path.wstring());
+  } else {
+    wchar_t code[24] = {};
+    swprintf_s(code, L" (0x%08lX)", error);
+    LogEvent(L"decoder-unavailable", path.wstring() + code);
+  }
+  return decoder_ready_;
+}
+
+// 列式码（全拼串＋逐位结构串＋逐位部件串）Rime 的分词器切不动：结构位和
+// 部件位与它们描述的那个字并不相邻，所以解码器必须自己出候选。
+//
+// 它原先只在 Rime 一个候选都给不出来时才上场。那个门槛定错了 —— Rime 给出
+// 候选不等于给对。打 woxiangwen 它只能靠补全凑出「我想问问 ~wen」，打
+// xuancibz 它读成「选＋疵」；两次都有候选，两次都不是要的词，而解码器把
+// 「我想问」排在第一位。有候选就闭嘴，等于把解码器锁死在最需要它的场合外。
+//
+// 现在改成补位：Rime 的候选原样排在前面，解码器填这一页剩下的空位。打得准
+// 的时候第一位一个字不动，打到词库覆盖不到的地方，第二第三位就有救。
+void RimeEngine::FillDecodedCandidates(EngineSnapshot* out) {
+  // 候选窗一页放几条。必须与 data/zuxia.schema.yaml 的 menu/page_size 相同，
+  // 否则补位要么填不满要么溢出一页；data-tools/audit_zuxia.py 逐版核对。
+  constexpr size_t kPageSize = 9;
+  overlay_.clear();
+  overlay_code_.clear();
+  overlay_tail_.clear();
+  overlay_base_ = 0;
+  if (!out || out->preedit.empty()) return;
+  // 翻过页之后这一页整页都是 Rime 的，补位只发生在第一页。
+  if (out->page_no != 0) return;
+  const size_t taken = out->candidates.size();
+  if (taken >= kPageSize) return;
+  const char* raw = api_->get_input(session_);
+  if (!raw || !*raw) return;
+  const std::string keys(raw);
+  if (keys.size() < 3) return;
+  if (!EnsureDecoder()) return;
+
+  const size_t room = kPageSize - taken;
+  std::vector<std::wstring> words;
+  std::string tail;
+  try {
+    // 多要一些：与 Rime 重复的要丢掉，丢完还得填得满。
+    words = decoder_.Decode(keys, room + taken, &tail);
+  } catch (...) {
+    return;
+  }
+  // 兜底候选只用掉了码的前一段。剩下的那几位必须能原样交回 Rime，所以先
+  // 确认它确实是这串码的后缀；确认不了就整批不要 —— 端出一个会吞掉用户
+  // 按键的候选，比不端出来糟得多。
+  std::string used = keys;
+  if (!tail.empty()) {
+    if (tail.size() >= keys.size() ||
+        keys.compare(keys.size() - tail.size(), tail.size(), tail) != 0) {
+      return;
+    }
+    used = keys.substr(0, keys.size() - tail.size());
+  }
+  for (const std::wstring& word : words) {
+    if (overlay_.size() >= room) break;
+    bool duplicate = false;
+    for (const Candidate& shown : out->candidates) {
+      if (shown.text == word) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (duplicate) continue;
+    Candidate one;
+    one.text = word;
+    one.label = std::to_wstring(taken + overlay_.size() + 1);
+    // 兜底候选只吃掉码的前一段。在候选窗里把剩下那几位标出来，用户看一眼
+    // 就知道「选它不会把 rm 吃掉，rm 还留着接着打」。不标的话这些候选看
+    // 上去与精确命中的一模一样，选下去多出一截码会让人以为输入法在乱跳。
+    if (!tail.empty()) {
+      one.comment = L"…";
+      one.comment.append(tail.begin(), tail.end());
+    }
+    out->candidates.push_back(one);
+    overlay_.push_back(word);
+  }
+  if (!overlay_.empty()) {
+    overlay_base_ = taken;
+    // Rime 一个都没给时解码器的第一条就是首选；否则高亮归 Rime。
+    if (taken == 0) out->highlighted = 0;
+    // 选中之后要把这串码和选中的字一起记进回流表，所以码得留到那时候。
+    // 兜底时记的是真正用上的那段前缀，否则下次打同样的码前置不到。
+    overlay_code_ = used;
+    overlay_tail_ = tail;
+  }
+}
+
 EngineSnapshot RimeEngine::ProcessKey(int keycode, int modifiers) {
   if (!Ready()) return {};
+  // 解码器交出去的候选 Rime 不知道，选择键得在这里截下来自己落字。落在
+  // overlay_base_ 之前的下标是 Rime 的候选，必须原样放过去。
+  if (!overlay_.empty() && modifiers == 0) {
+    int pick = -1;
+    if (keycode >= '1' && keycode <= '9') pick = keycode - '1';
+    // 空格落的是高亮那条。Rime 有候选时高亮是它的，空格就该归它。
+    else if (keycode == ' ' && overlay_base_ == 0) pick = 0;
+    const size_t base = overlay_base_;
+    if (pick >= 0 && static_cast<size_t>(pick) >= base &&
+        static_cast<size_t>(pick) - base < overlay_.size()) {
+      EngineSnapshot out;
+      out.handled = true;
+      out.commit = overlay_[static_cast<size_t>(pick) - base];
+      // 回流：这是用户在这串码上的选择，记下来，下次同一串码直接前置。
+      decoder_.RecordChoice(overlay_code_, out.commit);
+      const std::string tail = overlay_tail_;
+      overlay_.clear();
+      overlay_code_.clear();
+      overlay_tail_.clear();
+      overlay_base_ = 0;
+      api_->clear_composition(session_);
+      // 兜底候选只吃掉了码的前一段，剩下那几位是用户真按过的键，得原样
+      // 送回去接着组字。落字与组字要在同一个快照里交出去，所以
+      // CTextService::_ApplyRimeSnapshot 必须两样都处理 —— 它以前只处理
+      // 落字，preedit 会被丢掉。
+      if (!tail.empty()) {
+        for (char key : tail) {
+          api_->process_key(
+              session_, static_cast<int>(static_cast<unsigned char>(key)), 0);
+        }
+        EngineSnapshot after = ReadSnapshot(true);
+        // 理论上喂几个字母不会触发落字，真触发了也不能丢。
+        out.commit += after.commit;
+        out.composing = after.composing;
+        out.preedit = std::move(after.preedit);
+        out.candidates = std::move(after.candidates);
+        out.highlighted = after.highlighted;
+        out.page_no = after.page_no;
+        out.last_page = after.last_page;
+        FillDecodedCandidates(&out);
+      }
+      return out;
+    }
+  }
   const bool handled = api_->process_key(session_, keycode, modifiers);
-  return ReadSnapshot(handled);
+  EngineSnapshot out = ReadSnapshot(handled);
+  FillDecodedCandidates(&out);
+  return out;
 }
 
 EngineSnapshot RimeEngine::Snapshot() {
@@ -100,7 +286,17 @@ EngineSnapshot RimeEngine::Snapshot() {
 }
 
 void RimeEngine::Clear() {
+  overlay_.clear();
+  overlay_code_.clear();
+  overlay_tail_.clear();
+  overlay_base_ = 0;
   if (Ready()) api_->clear_composition(session_);
+}
+
+std::string RimeEngine::RawInput() const {
+  if (!initialized_ || !api_ || !session_) return std::string();
+  const char* raw = api_->get_input(session_);
+  return raw ? std::string(raw) : std::string();
 }
 
 bool RimeEngine::IsAsciiMode() const {
@@ -259,7 +455,13 @@ EngineSnapshot RimeEngine::ReadSnapshot(bool handled) {
 
 bool RimeEngine::InitializeRuntime(HMODULE module) {
   std::filesystem::path module_dir(ModuleDirectory(module));
-  LogEvent(L"engine-start", module_dir.wstring());
+  // An application that is already running when the IME is upgraded keeps
+  // the old DLL mapped until it restarts, and then behaves like a version
+  // that is no longer installed. The build stamp is the only thing in the
+  // log that distinguishes which copy a given host actually loaded.
+  const std::string stamp(__DATE__ " " __TIME__);
+  LogEvent(L"engine-start", module_dir.wstring() + L" built " +
+                                std::wstring(stamp.begin(), stamp.end()));
   const std::filesystem::path runtime_path = module_dir / L"rime.dll";
   if (!std::filesystem::exists(runtime_path)) {
     LogEvent(L"engine-failed", L"rime.dll not found beside the text service");
@@ -303,6 +505,7 @@ bool RimeEngine::InitializeRuntime(HMODULE module) {
     return false;
   }
   LoadCodeHints(shared.wstring());
+  shared_data_dir_ = shared.wstring();
   std::filesystem::path user(LocalAppDataDirectory());
   user /= L"Zuxia";
   user /= L"Rime";
@@ -403,7 +606,13 @@ int RimeEngine::VirtualKeyToRimeKey(WPARAM virtual_key) {
     return static_cast<int>(virtual_key - 'A' + 'a');
   }
   if (virtual_key >= '0' && virtual_key <= '9') {
-    return static_cast<int>(virtual_key);
+    // 数字键按住 Shift 打出来的是标点：！＠＃￥％……＆＊（）。原先这里
+    // 无条件返回数字，于是想打「（」得到的是「9」—— 组字中那一下还会被
+    // 当成选第 9 个候选。中文常用的 ！（） 三个标点全在这条路上，所以必须
+    // 像标点那样问一次键盘布局。问不出来（布局古怪、ToUnicodeEx 给多个
+    // 字符）才退回数字本身。
+    const int ch = AsciiForKey(virtual_key);
+    return ch ? ch : static_cast<int>(virtual_key);
   }
   switch (virtual_key) {
     case VK_SPACE:

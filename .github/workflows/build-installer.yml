@@ -50,6 +50,14 @@ jobs:
       - name: decode_zuxia.py --selftest
         run: python data-tools/decode_zuxia.py --selftest
 
+      # C++ 侧解码器自检：与上面 Python 自检同用例。用仓库自带的小 Win32
+      # 桩头在 Linux 上直接编 Decoder.cpp，11 条断言全过才放行。
+      - name: C++ 解码器自检（Linux）
+        run: |
+          g++ -std=c++17 -O2 -Itools/linux-selftest -Isrc \
+              -o /tmp/dselftest tools/linux-selftest/decoder-selftest.cpp src/Decoder.cpp
+          /tmp/dselftest
+
       - name: 编码质量（留在日志里备查）
         run: python data-tools/measure_zuxia.py data/zuxia.dict.yaml --labels "足下 $(cat VERSION)"
 
@@ -90,15 +98,19 @@ jobs:
 
       # engine-test 必须在 x64\ 目录里跑：RimeEngine 从自己的模块路径找
       # rime.dll 和 ..\data，和文本服务运行时的行为一致。
+      # 断言输出要留一份到产物里。只有 pass/fail 是不够的：有几条断言会在
+      # 环境不满足时自己跳过（比如模拟 Shift 没起作用），光看「绿了」分不出
+      # 「跑过并通过」和「跳过了」—— 而那两件事的结论完全不同。
       - name: 引擎断言
         shell: pwsh
         run: |
           pwsh tools/build-engine-test.ps1 -Arch x64
           Copy-Item tools/engine-test.exe dist/Zuxia/x64/ -Force
           Push-Location dist/Zuxia/x64
-          .\engine-test.exe
-          if ($LASTEXITCODE -ne 0) { throw "engine-test 有断言没过" }
+          .\engine-test.exe 2>&1 | Tee-Object -FilePath ../engine-test.log
+          $code = $LASTEXITCODE
           Pop-Location
+          if ($code -ne 0) { throw "engine-test 有断言没过" }
 
       - name: 打单文件安装包
         shell: pwsh
@@ -120,6 +132,7 @@ jobs:
             dist/ZuxiaSetup-*.exe
             dist/ZuxiaSetup-*.exe.sha256
             dist/Zuxia/MANIFEST.sha256
+            dist/Zuxia/engine-test.log
           if-no-files-found: error
           retention-days: 30
 

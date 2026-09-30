@@ -3,15 +3,31 @@
 #include "TextService.h"
 
 #include "CandidateWindow.h"
+#include "Diagnostics.h"
 
 #include <new>
+
+namespace {
+
+// 按键路径上的失败会一次一键地重复。日志容量有限，所以每种失败每个进程
+// 只留头几条 —— 被同一条消息刷满的日志等于没有日志。
+bool WithinLogBudget(LONG* seen, LONG budget) {
+  return InterlockedIncrement(seen) <= budget;
+}
+
+}  // namespace
 
 class CKeyHandlerEditSession final : public CEditSessionBase {
  public:
   CKeyHandlerEditSession(CTextService* service, ITfContext* context, WPARAM key)
       : CEditSessionBase(service, context), key_(key) {}
 
-  STDMETHODIMP DoEditSession(TfEditCookie cookie) override {
+  // 引擎是否已经吃下这一键。吃下了就绝不能再把键交还给应用，哪怕后面写
+  // 文档失败 —— 见 _InvokeKeyHandler。
+  bool EngineTookKey() const { return engine_took_key_; }
+
+  STDMETHODIMP DoEditSession(TfEditCookie cookie) override
+      ZUXIA_COM_GUARD_BEGIN
     const int rime_key = zuxia::RimeEngine::VirtualKeyToRimeKey(key_);
     if (!rime_key) return S_FALSE;
 
@@ -19,13 +35,32 @@ class CKeyHandlerEditSession final : public CEditSessionBase {
         text_service_->_Engine().ProcessKey(rime_key);
     if (!snapshot.handled && snapshot.commit.empty() &&
         snapshot.preedit.empty() && !snapshot.composing) {
+      // Rime 看过之后什么也没发生，它内部状态没动，这一键还给应用是对的。
       return S_FALSE;
     }
-    return text_service_->_ApplyRimeSnapshot(cookie, context_, snapshot);
-  }
+    engine_took_key_ = true;
+
+    const HRESULT applied =
+        text_service_->_ApplyRimeSnapshot(cookie, context_, snapshot);
+    if (FAILED(applied)) {
+      // 引擎已经吃下这一键，文档却没写成（组字范围失效、宿主拒绝写入）。
+      // 这时候把键交还给应用，字母会原样落进文档而 Rime 那边还留着它，
+      // 两边从此错位，越打越乱。宁可丢掉这一键：把两边都清干净，键仍然
+      // 算我们吃掉的。这条路径以前完全没有日志。
+      static LONG seen = 0;
+      if (WithinLogBudget(&seen, 8)) {
+        zuxia::LogFailure(L"apply-failed", static_cast<unsigned long>(applied));
+      }
+      text_service_->_CancelComposition(cookie, context_);
+      text_service_->_Engine().Clear();
+      text_service_->_HideCandidateWindow();
+    }
+    return applied;
+  ZUXIA_COM_GUARD_END(L"CKeyHandlerEditSession::DoEditSession", E_FAIL)
 
  private:
   WPARAM key_;
+  bool engine_took_key_ = false;
 };
 
 BOOL IsRangeCovered(TfEditCookie cookie, ITfRange* test, ITfRange* cover) {
@@ -51,8 +86,24 @@ HRESULT CTextService::_InvokeKeyHandler(ITfContext* context, WPARAM key,
   HRESULT session_result = E_FAIL;
   const HRESULT request_result = context->RequestEditSession(
       _tfClientId, session, TF_ES_SYNC | TF_ES_READWRITE, &session_result);
+  // Release 之后对象可能就没了，标志位得先读出来。TF_ES_SYNC 保证
+  // DoEditSession 已经在 RequestEditSession 里跑完。
+  const bool engine_took_key = session->EngineTookKey();
   session->Release();
-  return SUCCEEDED(request_result) ? session_result : request_result;
+
+  if (FAILED(request_result)) {
+    // 同步写锁没拿到，DoEditSession 根本没跑，引擎也就没碰过这一键 ——
+    // 交还给应用是安全的。以前这条路一声不吭，现在留个记号。
+    static LONG refused = 0;
+    if (WithinLogBudget(&refused, 8)) {
+      zuxia::LogFailure(L"edit-session-refused",
+                        static_cast<unsigned long>(request_result));
+    }
+    return request_result;
+  }
+  // 引擎吃下了就必须报 S_OK，否则调用方会把 *eaten 改回 FALSE，这一键就
+  // 两边都生效了一次。
+  return engine_took_key ? S_OK : session_result;
 }
 
 HRESULT CTextService::_EnsureComposition(TfEditCookie cookie,
@@ -184,6 +235,20 @@ HRESULT CTextService::_ApplyRimeSnapshot(
     const zuxia::EngineSnapshot& snapshot) {
   if (!snapshot.commit.empty()) {
     const HRESULT result = _CommitText(cookie, context, snapshot.commit);
+    // 一次按键可以同时「落下前一段」和「还剩一段在组字」：选了只覆盖一半
+    // 输入的候选、或者选了解码器的兜底候选，都是这样。原先这里落完字就
+    // return，剩下那段 preedit 连同它的候选一起消失 —— 用户按过的键凭空
+    // 不见了。两样都要处理。
+    if (SUCCEEDED(result) && !snapshot.preedit.empty()) {
+      const HRESULT kept =
+          _SetCompositionText(cookie, context, snapshot.preedit);
+      if (SUCCEEDED(kept)) {
+        _UpdateCandidateWindow(cookie, context, snapshot);
+      } else {
+        _HideCandidateWindow();
+      }
+      return kept;
+    }
     _HideCandidateWindow();
     return result;
   }

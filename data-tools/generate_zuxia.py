@@ -39,15 +39,49 @@ NOT_A_COMPONENT = set("？?[]{}()0123456789"
                       "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
                       "abcdefghijklmnopqrstuvwxyz")
 
-# Characters the IDS data decomposes into strokes rather than components. The
-# stroke tree is arbitrary -- it makes 山 look enclosed and 口 look stacked --
-# so the structure key has to be stated by hand for them. This list is the
-# floor, not the ceiling: see load_structure_overrides() for the authoritative
-# map, and docs/方案升级审计.md for why it matters.
-SINGLE_STRUCTURE_OVERRIDES = set(
-    "中木本末未米术朱束东车申甲由田王玉井开丰手牛羊生年午果来"
-    "夫天大太犬丈支十干于土士工〇"
-)
+# 独体字 are the one class the IDS data cannot be trusted on: it decomposes
+# them into strokes rather than components, and the stroke tree is arbitrary --
+# it makes 山 look enclosed (⿶凵丨) and 口 look stacked (⿱丨乛一).  Checked
+# once against the national standard: of its 256 characters the generator got
+# 42 right and 214 wrong, and those 214 are 19% of everything a typist types.
+#
+# So the list is read from GF 0013-2009 rather than guessed.  That standard is
+# also the right authority for a different reason: its stated scope is 识字教育,
+# which is exactly where a typist learned to tell 独体 from 合体 in the first
+# place.  A structure key the typist cannot guess is worth nothing.
+SINGLE_PATH = pathlib.Path(__file__).resolve().parent / "sources/gf0013-duti.txt"
+
+# 〇 and 卍 are not in the standard because they are not really 汉字; 孓 is too
+# rare for it. All three decompose to nothing usable, so they are named here.
+EXTRA_SINGLE = set("〇卍孓")
+
+
+def load_single_characters(path: pathlib.Path = SINGLE_PATH) -> set[str]:
+    """The 独体字 table, straight from GF 0013-2009."""
+    out: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("#"):
+            continue
+        out |= {c for c in line if "\u4e00" <= c <= "\u9fff"}
+    if len(out) != 256:
+        raise SystemExit(f"{path} 应当正好 256 字，读到 {len(out)}")
+    return out | EXTRA_SINGLE
+
+
+SINGLE_STRUCTURE_OVERRIDES = load_single_characters()
+
+# hanzi-dictionary.txt describes a handful of characters as one part *inserted
+# into* another -- 街 is ⿻行圭, not the ⿲彳圭亍 the IDS data gives.  ⿻ means
+# "overlaid", which is not one of the four shape buckets, so every one of them
+# landed in the catch-all: 衡 came out hengp.  That is both unguessable and
+# inconsistent, because 衎 and 衞 have no hanzi-dictionary row at all, fall back
+# to the IDS tree, and so came out 左右 like a typist expects.
+#
+# The hosts are named rather than inferred.  Only these three are real infixes
+# in the 8105 charset; every other ⿻ in that file is two strokes crossing --
+# 水 is ⿻亅？, 火 is ⿻丷人 -- where trusting either tree would be worse than
+# the catch-all.  ⿴ is listed too because 衝 is written ⿴行重.
+INFIX_HOSTS = {"行": "z", "雔": "z", "衣": "s"}
 
 
 def strip_tone(text: str) -> str:
@@ -212,6 +246,9 @@ def classify_structure(node, character: str,
     leaves = leaves_of(node)
     if len(leaves) == 3 and len(set(leaves)) == 1:
         return "p"
+    # Before the enclosure test: 衝 is ⿴行重, which is an infix, not 包围.
+    if op in {"⿻", "⿴"} and children[0][0] in INFIX_HOSTS:
+        return INFIX_HOSTS[children[0][0]]
     if op in {"⿰", "⿲"}:
         return "z"
     if op in {"⿱", "⿳"}:

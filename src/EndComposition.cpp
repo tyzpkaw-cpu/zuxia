@@ -1,5 +1,6 @@
 #include "Globals.h"
 #include "EditSession.h"
+#include "Diagnostics.h"
 #include "TextService.h"
 
 #include <new>
@@ -9,10 +10,10 @@ class CEndCompositionEditSession final : public CEditSessionBase {
   CEndCompositionEditSession(CTextService* service, ITfContext* context)
       : CEditSessionBase(service, context) {}
 
-  STDMETHODIMP DoEditSession(TfEditCookie cookie) override {
+  STDMETHODIMP DoEditSession(TfEditCookie cookie) override ZUXIA_COM_GUARD_BEGIN
     text_service_->_CancelComposition(cookie, context_);
     return S_OK;
-  }
+  ZUXIA_COM_GUARD_END(L"CEndCompositionEditSession::DoEditSession", E_FAIL)
 };
 
 void CTextService::_TerminateComposition(TfEditCookie cookie,

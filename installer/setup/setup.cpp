@@ -349,6 +349,7 @@ bool DoInstall(std::wstring* error) {
                                L"\\data\\zuxia.dict.yaml",
                                L"\\data\\zuxia_char_codes.dict.yaml",
                                L"\\data\\zuxia.extended.dict.yaml",
+                               L"\\data\\zuxia.decoder.tsv",
                                L"\\x64\\" ZX_SETTINGS_EXE,
                                L"\\x86\\" ZX_SETTINGS_EXE,
                                L"\\x86\\" ZX_TSF_DLL, L"\\x86\\rime.dll"};

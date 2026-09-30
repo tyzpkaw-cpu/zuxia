@@ -66,7 +66,7 @@ STDMETHODIMP_(ULONG) CTextService::Release() {
 }
 
 STDMETHODIMP CTextService::Activate(ITfThreadMgr* thread_mgr,
-                                    TfClientId client_id) {
+                                    TfClientId client_id) ZUXIA_COM_GUARD_BEGIN
   if (!thread_mgr) return E_INVALIDARG;
   ITfDocumentMgr* focused = nullptr;
   _pThreadMgr = thread_mgr;
@@ -103,9 +103,9 @@ error:
   zuxia::LogEvent(L"activate-failed");
   Deactivate();
   return E_FAIL;
-}
+ZUXIA_COM_GUARD_END(L"CTextService::Activate", E_FAIL)
 
-STDMETHODIMP CTextService::Deactivate() {
+STDMETHODIMP CTextService::Deactivate() ZUXIA_COM_GUARD_BEGIN
   _UninitLanguageBar();
   _UninitInputMode();
   engine_.Clear();
@@ -132,4 +132,4 @@ STDMETHODIMP CTextService::Deactivate() {
   }
   _tfClientId = 0;
   return S_OK;
-}
+ZUXIA_COM_GUARD_END(L"CTextService::Deactivate", S_OK)

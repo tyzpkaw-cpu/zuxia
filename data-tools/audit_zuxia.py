@@ -211,7 +211,9 @@ def audit_versions() -> None:
     # their own; only our own build inputs have to agree.
     owned = ["CMakeLists.txt", "VERSION", "src", "installer", "data/default.yaml",
              "data/zuxia.schema.yaml", "tools/port_from_yingwu.py"]
-    stale = subprocess.run(["git", "grep", "-l", "0.1.0", "--", *owned],
+    # -F 是按字面找。不加它 git grep 会把 0.1.0 当正则，`.` 通配任意字符 ——
+    # src/Decoder.cpp 里的 0x10000 就会被当成「残留的旧版本号」误报。
+    stale = subprocess.run(["git", "grep", "-l", "-F", "0.1.0", "--", *owned],
                            cwd=ROOT, capture_output=True, text=True).stdout.split()
     check("自有源码里没有残留的旧版本号", not stale, f"{stale}")
 
@@ -231,10 +233,21 @@ def audit_port_script() -> None:
         re.findall(r"kMaxCodes = (\d+)", port)
     check("两处的 kMaxCodes 相同", len(set(kmax)) == 1, f"{kmax}")
 
+    # 解码器补位要正好填满候选窗剩下的位置，页大小两边写死一次就得对一次。
+    page = re.search(r"page_size:\s*(\d+)",
+                     (ROOT / "data/zuxia.schema.yaml").read_text(encoding="utf-8"))
+    code = re.search(r"kPageSize = (\d+)", src)
+    check("kPageSize 与 schema 的 page_size 相同",
+          bool(page and code) and page.group(1) == code.group(1),
+          f"schema={page and page.group(1)} src={code and code.group(1)}")
+
 
 def audit_installer() -> None:
     print("\n安装载荷清单")
-    data = {p.name for p in (ROOT / "data").glob("*.yaml")}
+    # 会随安装包发出去的数据文件：yaml 之外还有生成器产出的解码器 tsv
+    # （CMake 的 install 规则同样按 *.yaml + *.tsv 收录）。
+    data = {p.name for p in (ROOT / "data").glob("*.yaml")} | {
+        p.name for p in (ROOT / "data").glob("*.tsv")}
     for rel, pattern in [("installer/setup/setup.cpp", r'L"\\\\data\\\\([\w.]+)"'),
                          ("installer/Install-Zuxia.ps1", r"'data\\([\w.]+)'")]:
         text = (ROOT / rel).read_text(encoding="utf-8")

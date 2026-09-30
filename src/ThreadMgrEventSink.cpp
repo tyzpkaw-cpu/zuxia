@@ -14,6 +14,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "Globals.h"
+#include "Diagnostics.h"
 #include "TextService.h"
 
 //+---------------------------------------------------------------------------
@@ -52,7 +53,7 @@ STDAPI CTextService::OnUninitDocumentMgr(ITfDocumentMgr *pDocMgr)
 //----------------------------------------------------------------------------
 
 STDAPI CTextService::OnSetFocus(ITfDocumentMgr *pDocMgrFocus, ITfDocumentMgr *pDocMgrPrevFocus)
-{
+ZUXIA_COM_GUARD_BEGIN
     if (pDocMgrFocus != pDocMgrPrevFocus)
     {
         if (_pTextEditSinkContext != NULL && _IsComposing())
@@ -69,7 +70,7 @@ STDAPI CTextService::OnSetFocus(ITfDocumentMgr *pDocMgrFocus, ITfDocumentMgr *pD
     _InitTextEditSink(pDocMgrFocus);
 
     return S_OK;
-}
+ZUXIA_COM_GUARD_END(L"CTextService::OnSetFocus(docmgr)", S_OK)
 
 //+---------------------------------------------------------------------------
 //
@@ -79,9 +80,9 @@ STDAPI CTextService::OnSetFocus(ITfDocumentMgr *pDocMgrFocus, ITfDocumentMgr *pD
 //----------------------------------------------------------------------------
 
 STDAPI CTextService::OnPushContext(ITfContext *pContext)
-{
+ZUXIA_COM_GUARD_BEGIN
     return S_OK;
-}
+ZUXIA_COM_GUARD_END(L"CTextService::OnPushContext", S_OK)
 
 //+---------------------------------------------------------------------------
 //
@@ -91,14 +92,14 @@ STDAPI CTextService::OnPushContext(ITfContext *pContext)
 //----------------------------------------------------------------------------
 
 STDAPI CTextService::OnPopContext(ITfContext *pContext)
-{
+ZUXIA_COM_GUARD_BEGIN
     if (pContext == _pTextEditSinkContext)
     {
         engine_.Clear();
         _HideCandidateWindow();
     }
     return S_OK;
-}
+ZUXIA_COM_GUARD_END(L"CTextService::OnPopContext", S_OK)
 
 //+---------------------------------------------------------------------------
 //

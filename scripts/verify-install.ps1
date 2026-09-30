@@ -174,7 +174,8 @@ if ($is64Os -and -not (Test-Path -LiteralPath (Join-Path $InstallRoot 'x86\'))) 
     Add-Result '文件' 'x86 目录' 'WARN' '64 位系统上缺少 x86 文本服务：32 位应用（旧版 Office 等）里无法输入'
 }
 
-$dataFiles = @('default.yaml', 'zuxia.schema.yaml', 'zuxia.dict.yaml', 'zuxia_char_codes.dict.yaml')
+$dataFiles = @('default.yaml', 'zuxia.schema.yaml', 'zuxia.dict.yaml', 'zuxia_char_codes.dict.yaml',
+                'zuxia.extended.dict.yaml', 'zuxia.decoder.tsv')
 foreach ($f in $dataFiles) {
     $p = Join-Path (Join-Path $InstallRoot 'data') $f
     Add-Result '文件' ("data\{0}" -f $f) $(if (Test-Path -LiteralPath $p) { 'PASS' } else { 'FAIL' }) ''
