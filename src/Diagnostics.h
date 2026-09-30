@@ -16,6 +16,9 @@
 #endif
 #include <windows.h>
 
+// ZUXIA_COM_GUARD_END catches std::exception by reference, so every file that
+// uses the guard needs this whether or not it includes <exception> itself.
+#include <exception>
 #include <string>
 
 namespace zuxia {

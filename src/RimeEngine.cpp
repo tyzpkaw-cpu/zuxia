@@ -161,6 +161,7 @@ void RimeEngine::FillDecodedCandidates(EngineSnapshot* out) {
   constexpr size_t kPageSize = 9;
   overlay_.clear();
   overlay_code_.clear();
+  overlay_tail_.clear();
   overlay_base_ = 0;
   if (!out || out->preedit.empty()) return;
   // 翻过页之后这一页整页都是 Rime 的，补位只发生在第一页。
@@ -175,11 +176,23 @@ void RimeEngine::FillDecodedCandidates(EngineSnapshot* out) {
 
   const size_t room = kPageSize - taken;
   std::vector<std::wstring> words;
+  std::string tail;
   try {
     // 多要一些：与 Rime 重复的要丢掉，丢完还得填得满。
-    words = decoder_.Decode(keys, room + taken);
+    words = decoder_.Decode(keys, room + taken, &tail);
   } catch (...) {
     return;
+  }
+  // 兜底候选只用掉了码的前一段。剩下的那几位必须能原样交回 Rime，所以先
+  // 确认它确实是这串码的后缀；确认不了就整批不要 —— 端出一个会吞掉用户
+  // 按键的候选，比不端出来糟得多。
+  std::string used = keys;
+  if (!tail.empty()) {
+    if (tail.size() >= keys.size() ||
+        keys.compare(keys.size() - tail.size(), tail.size(), tail) != 0) {
+      return;
+    }
+    used = keys.substr(0, keys.size() - tail.size());
   }
   for (const std::wstring& word : words) {
     if (overlay_.size() >= room) break;
@@ -202,7 +215,9 @@ void RimeEngine::FillDecodedCandidates(EngineSnapshot* out) {
     // Rime 一个都没给时解码器的第一条就是首选；否则高亮归 Rime。
     if (taken == 0) out->highlighted = 0;
     // 选中之后要把这串码和选中的字一起记进回流表，所以码得留到那时候。
-    overlay_code_ = keys;
+    // 兜底时记的是真正用上的那段前缀，否则下次打同样的码前置不到。
+    overlay_code_ = used;
+    overlay_tail_ = tail;
   }
 }
 
@@ -223,10 +238,32 @@ EngineSnapshot RimeEngine::ProcessKey(int keycode, int modifiers) {
       out.commit = overlay_[static_cast<size_t>(pick) - base];
       // 回流：这是用户在这串码上的选择，记下来，下次同一串码直接前置。
       decoder_.RecordChoice(overlay_code_, out.commit);
+      const std::string tail = overlay_tail_;
       overlay_.clear();
       overlay_code_.clear();
+      overlay_tail_.clear();
       overlay_base_ = 0;
       api_->clear_composition(session_);
+      // 兜底候选只吃掉了码的前一段，剩下那几位是用户真按过的键，得原样
+      // 送回去接着组字。落字与组字要在同一个快照里交出去，所以
+      // CTextService::_ApplyRimeSnapshot 必须两样都处理 —— 它以前只处理
+      // 落字，preedit 会被丢掉。
+      if (!tail.empty()) {
+        for (char key : tail) {
+          api_->process_key(
+              session_, static_cast<int>(static_cast<unsigned char>(key)), 0);
+        }
+        EngineSnapshot after = ReadSnapshot(true);
+        // 理论上喂几个字母不会触发落字，真触发了也不能丢。
+        out.commit += after.commit;
+        out.composing = after.composing;
+        out.preedit = std::move(after.preedit);
+        out.candidates = std::move(after.candidates);
+        out.highlighted = after.highlighted;
+        out.page_no = after.page_no;
+        out.last_page = after.last_page;
+        FillDecodedCandidates(&out);
+      }
       return out;
     }
   }
@@ -244,8 +281,15 @@ EngineSnapshot RimeEngine::Snapshot() {
 void RimeEngine::Clear() {
   overlay_.clear();
   overlay_code_.clear();
+  overlay_tail_.clear();
   overlay_base_ = 0;
   if (Ready()) api_->clear_composition(session_);
+}
+
+std::string RimeEngine::RawInput() const {
+  if (!initialized_ || !api_ || !session_) return std::string();
+  const char* raw = api_->get_input(session_);
+  return raw ? std::string(raw) : std::string();
 }
 
 bool RimeEngine::IsAsciiMode() const {

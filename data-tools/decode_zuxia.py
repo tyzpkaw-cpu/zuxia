@@ -196,12 +196,18 @@ def decode(text: str, index: Index, prior: dict[str, int] | None = None,
     """返回 [(词, 分数, 是否在词库)]，分数越大越靠前。"""
     prior = prior or {}
     bigram = bigram or {}
-    best: dict[str, tuple[float, bool]] = {}
+    best: dict[str, tuple[int, float, bool]] = {}
 
     for syllables, tail in segmentations(text, index):
         per = constraints(syllables, tail)
         if per is None:
             continue
+        # 这个切法把码填满到第几列。半列（尾巴除不尽字数）的切法码表根本
+        # 出不来，记 -1 永远排在后面。与 src/Decoder.cpp 的 columns_filled
+        # 同构 —— 判据是「码打得满」而不是「字多」：打 xuancibz 时
+        # 「选词」把结构列填满了，「选此」只是碰巧也解得通。
+        columns = (-1 if len(tail) % len(syllables)
+                   else len(tail) // len(syllables))
         beam: list[tuple[str, float]] = [("", 0.0)]
         for syllable, structure, comps in per:
             chars = index.lookup(syllable, structure, comps)
@@ -221,11 +227,35 @@ def decode(text: str, index: Index, prior: dict[str, int] | None = None,
             # 词库命中直接抬到另一个量级，非词库解按字频几何均值排。
             in_dict = word in prior
             value = (1e9 + math.log(prior[word] + 1)) if in_dict else score / len(word)
-            if word not in best or value > best[word][0]:
-                best[word] = (value, in_dict)
+            old = best.get(word)
+            if old is None or (columns, value) > (old[0], old[1]):
+                best[word] = (columns, value, in_dict)
 
-    ranked = sorted(best.items(), key=lambda kv: -kv[1][0])
-    return [(w, v, d) for w, (v, d) in ranked[:limit]]
+    ranked = sorted(best.items(), key=lambda kv: (-kv[1][0], -kv[1][1], kv[0]))
+    return [(w, v, d) for w, (_, v, d) in ranked[:limit]]
+
+
+# 最多允许把末尾这么多位当成「没打完／打错了」退回去重试。一个字最多多出
+# 结构位加两个部件位，正好三位，所以「少打一个字的尾巴」一定落在 3 位以内。
+MAX_FALLBACK_TAIL = 3
+
+
+def decode_fallback(text: str, index: Index, prior=None, bigram=None,
+                    limit: int = 9):
+    """整串码拼不出来时退到最长有效前缀。返回 (结果, 没用上的尾巴)。
+
+    与 src/Decoder.cpp 的 SearchLongestPrefix 同构。尾巴必须交给调用方 ——
+    输入法那边要把它重新喂回去接着组字，吃掉就是丢字。
+    """
+    rows = decode(text, index, prior, bigram, limit)
+    if rows or len(text) < 3:
+        return rows, ""
+    shortest = max(2, len(text) - MAX_FALLBACK_TAIL)
+    for length in range(len(text) - 1, shortest - 1, -1):
+        rows = decode(text[:length], index, prior, bigram, limit)
+        if rows:
+            return rows, text[length:]
+    return [], ""
 
 
 class Speller:
@@ -327,6 +357,14 @@ SELFTEST = [
     ("zuxiasdk", "足下"),   # 下 是独体字（GF 0013-2009），结构位 d
     ("yangzhipengzszmsp", "杨志鹏"),      # 三字，人名，词库里没有
     ("yangzhipengzszmspyxn", "杨志鹏"),
+    ("xuancibz", "选词"),      # 「码打得满」压过「字多」：选词 > 选此
+]
+
+# 死码兜底：整串拼不出来时退到最长有效前缀，尾巴要如实报出来。
+FALLBACK_SELFTEST = [
+    ("zuxiasdkh", "足下", "h"),
+    ("henmazzrm", "很吗", "rm"),
+    ("qqqqq", None, ""),       # 怎么退都拼不出来，就该老实交白卷
 ]
 
 
@@ -346,7 +384,17 @@ def selftest(index: Index, bigram) -> int:
         ok = not two
         bad += 0 if ok else 1
         print(f"  {'通过' if ok else '失败'}  {code:<22} -> 应拒绝，实得 {two[:3]}")
-    print(f"\n自检 {len(SELFTEST) + 2} 项，失败 {bad} 项")
+    for code, want, want_tail in FALLBACK_SELFTEST:
+        rows, tail = decode_fallback(code, index, {}, bigram, limit=3)
+        got = [w for w, _, _ in rows]
+        first = got[0] if got else None
+        ok = first == want and tail == want_tail
+        bad += 0 if ok else 1
+        print(f"  {'通过' if ok else '失败'}  {code:<22} -> "
+              f"{'/'.join(got[:3]) or '（无解）'} 尾巴 {tail or '（无）'}  "
+              f"期望 {want or '（无解）'} 尾巴 {want_tail or '（无）'}")
+    total = len(SELFTEST) + 2 + len(FALLBACK_SELFTEST)
+    print(f"\n自检 {total} 项，失败 {bad} 项")
     return 1 if bad else 0
 
 

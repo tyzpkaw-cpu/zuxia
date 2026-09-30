@@ -14,6 +14,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "Globals.h"
+#include "Diagnostics.h"
 #include "TextService.h"
 
 BOOL IsRangeCovered(TfEditCookie ec, ITfRange *pRangeTest, ITfRange *pRangeCover);
@@ -26,7 +27,7 @@ BOOL IsRangeCovered(TfEditCookie ec, ITfRange *pRangeTest, ITfRange *pRangeCover
 //----------------------------------------------------------------------------
 
 STDAPI CTextService::OnEndEdit(ITfContext *pContext, TfEditCookie ecReadOnly, ITfEditRecord *pEditRecord)
-{
+ZUXIA_COM_GUARD_BEGIN
     BOOL fSelectionChanged;
     IEnumTfRanges *pEnumTextChanges;
     ITfRange *pRange;
@@ -82,7 +83,7 @@ STDAPI CTextService::OnEndEdit(ITfContext *pContext, TfEditCookie ecReadOnly, IT
     }
 
     return S_OK;
-}
+ZUXIA_COM_GUARD_END(L"CTextService::OnEndEdit", S_OK)
 
 //+---------------------------------------------------------------------------
 //

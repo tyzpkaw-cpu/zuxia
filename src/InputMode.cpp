@@ -149,7 +149,11 @@ void LaunchSettings() {
 CModeButton::CModeButton(CTextService* service) : service_(service) {
   info_.clsidService = c_clsidTextService;
   info_.guidItem = c_guidModeButton;
-  info_.dwStyle = TF_LBI_STYLE_BTN_BUTTON;
+  // TF_LBI_STYLE_SHOWNINTRAY 是任务栏那个输入指示器愿意显示这个按钮图标的
+  // 条件。少了它，这一项只存在于早就默认隐藏的旧版语言栏里，指示器拿不到
+  // 图标就退回去显示语言缩写 —— 真机上看到的「简体」而不是「足」，来源就
+  // 在这里。微软自己的 SampleIME 也是 BTN_BUTTON | SHOWNINTRAY 两个一起给。
+  info_.dwStyle = TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAY;
   info_.ulSort = 0;
   StringCchCopyW(info_.szDescription, ARRAYSIZE(info_.szDescription),
                  TEXTSERVICE_DESC);
@@ -204,27 +208,27 @@ STDAPI CModeButton::Show(BOOL show) {
   return S_OK;
 }
 
-STDAPI CModeButton::GetTooltipString(BSTR* tooltip) {
+STDAPI CModeButton::GetTooltipString(BSTR* tooltip) ZUXIA_COM_GUARD_BEGIN
   if (!tooltip) return E_INVALIDARG;
   const bool native = !service_ || service_->_IsNativeMode();
   *tooltip = SysAllocString(native ? kChineseTip : kWesternTip);
   return *tooltip ? S_OK : E_OUTOFMEMORY;
-}
+ZUXIA_COM_GUARD_END(L"CModeButton::GetTooltipString", E_FAIL)
 
 STDAPI CModeButton::OnClick(TfLBIClick click, POINT /*point*/,
-                            const RECT* /*area*/) {
+                            const RECT* /*area*/) ZUXIA_COM_GUARD_BEGIN
   if (click == TF_LBI_CLK_LEFT && service_) service_->_ToggleInputMode();
   // 右键 = 设置。语言栏上这个按钮是输入法在系统里唯一固定的抓手，
   // 开始菜单那个快捷方式被用户删了，还能从这里进去。
   if (click == TF_LBI_CLK_RIGHT) LaunchSettings();
   return S_OK;
-}
+ZUXIA_COM_GUARD_END(L"CModeButton::OnClick", E_FAIL)
 
 STDAPI CModeButton::InitMenu(ITfMenu* /*menu*/) { return E_NOTIMPL; }
 
 STDAPI CModeButton::OnMenuSelect(UINT /*id*/) { return E_NOTIMPL; }
 
-STDAPI CModeButton::GetIcon(HICON* icon) {
+STDAPI CModeButton::GetIcon(HICON* icon) ZUXIA_COM_GUARD_BEGIN
   if (!icon) return E_INVALIDARG;
   *icon = nullptr;
   const bool native = !service_ || service_->_IsNativeMode();
@@ -233,14 +237,14 @@ STDAPI CModeButton::GetIcon(HICON* icon) {
   // 图标的所有权交给调用方，由它 DestroyIcon —— 这是 ITfLangBarItemButton
   // 的约定，所以每次都画一张新的，不能缓存着重复交出去。
   return *icon ? S_OK : S_FALSE;
-}
+ZUXIA_COM_GUARD_END(L"CModeButton::GetIcon", E_FAIL)
 
-STDAPI CModeButton::GetText(BSTR* text) {
+STDAPI CModeButton::GetText(BSTR* text) ZUXIA_COM_GUARD_BEGIN
   if (!text) return E_INVALIDARG;
   const bool native = !service_ || service_->_IsNativeMode();
   *text = SysAllocString(native ? kChineseText : kWesternText);
   return *text ? S_OK : E_OUTOFMEMORY;
-}
+ZUXIA_COM_GUARD_END(L"CModeButton::GetText", E_FAIL)
 
 STDAPI CModeButton::AdviseSink(REFIID riid, IUnknown* unknown, DWORD* cookie) {
   if (!IsEqualIID(riid, IID_ITfLangBarItemSink)) return CONNECT_E_CANNOTCONNECT;
@@ -358,12 +362,12 @@ void CTextService::_ApplyInputMode() {
   zuxia::LogEvent(L"mode", native ? L"chinese" : L"western");
 }
 
-STDMETHODIMP CTextService::OnChange(REFGUID guid) {
+STDMETHODIMP CTextService::OnChange(REFGUID guid) ZUXIA_COM_GUARD_BEGIN
   if (IsEqualGUID(guid, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION)) {
     _ApplyInputMode();
   }
   return S_OK;
-}
+ZUXIA_COM_GUARD_END(L"CTextService::OnChange", S_OK)
 
 BOOL CTextService::_InitInputMode() {
   _pModeCompartment = ModeCompartment(_pThreadMgr);

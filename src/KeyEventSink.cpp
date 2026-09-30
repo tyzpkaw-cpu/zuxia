@@ -36,6 +36,25 @@ bool IsCompositionControlKey(WPARAM key) {
 
 }  // namespace
 
+// Shift 轻敲切换中/西，这是靠 TF_MOD_ON_KEYUP 注册的预留键实现的。TSF 的
+// 文档说它只在「Shift 按下又松开、中间没有别的键」时才触发 —— 真机把这个
+// 说法证伪了：中文标点 ：？！（）""《》 每一个都要按住 Shift 才打得出，而
+// 这些键被我们自己吃掉了，没有作为普通按键回到 TSF 的账上，于是松开 Shift
+// 时预留键照样触发，输入法就被翻到西文。表现就是「打完一个标点忽然变英文」。
+//
+// 所以按键得我们自己记：Shift 按着的时候只要还按过别的键，这一次就不是
+// 轻敲。标志位在 OnPreservedKey 里用一次即清；另外只要看到一次没按 Shift
+// 的按键就顺手清掉，免得某次预留键没触发让标志位一直挂着，白吞掉下一次
+// 真正的轻敲。
+void CTextService::_NoteKeyForShiftTap(WPARAM key) {
+  if (key == VK_SHIFT || key == VK_LSHIFT || key == VK_RSHIFT) return;
+  if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
+    _shiftUsedWithKey = true;
+  } else {
+    _shiftUsedWithKey = false;
+  }
+}
+
 BOOL CTextService::_IsKeyEaten(ITfContext* /*context*/, WPARAM key) try {
   const bool ready = _EngineReady();
   const bool disabled = _IsKeyboardDisabled() != FALSE;
@@ -78,23 +97,29 @@ BOOL CTextService::_IsKeyEaten(ITfContext* /*context*/, WPARAM key) try {
   return FALSE;
 }
 
-STDMETHODIMP CTextService::OnSetFocus(BOOL foreground) {
+STDMETHODIMP CTextService::OnSetFocus(BOOL foreground) ZUXIA_COM_GUARD_BEGIN
   if (!foreground) _HideCandidateWindow();
   return S_OK;
-}
+ZUXIA_COM_GUARD_END(L"CTextService::OnSetFocus(bool)", S_OK)
 
 STDMETHODIMP CTextService::OnTestKeyDown(ITfContext* context, WPARAM key,
-                                         LPARAM /*flags*/, BOOL* eaten) {
+                                         LPARAM /*flags*/,
+                                         BOOL* eaten) ZUXIA_COM_GUARD_BEGIN
   if (!eaten) return E_INVALIDARG;
+  _NoteKeyForShiftTap(key);
   *eaten = _IsKeyEaten(context, key);
   return S_OK;
-}
+ZUXIA_COM_GUARD_END(L"CTextService::OnTestKeyDown", S_OK)
 
 STDMETHODIMP CTextService::OnKeyDown(ITfContext* context, WPARAM key,
                                      LPARAM flags, BOOL* eaten) try {
   if (!eaten) return E_INVALIDARG;
+  _NoteKeyForShiftTap(key);
   *eaten = _IsKeyEaten(context, key);
   if (*eaten) {
+    // S_OK 之外的每一种返回都表示「引擎没吃下这一键」—— _InvokeKeyHandler
+    // 现在保证了这一点。引擎吃下了却写不进文档时它返回 S_OK 并自己收拾，
+    // 因为把键交还给应用会让字母原样落进文档而 Rime 那边还留着它。
     const HRESULT result = _InvokeKeyHandler(context, key, flags);
     if (result != S_OK) *eaten = FALSE;
   }
@@ -125,6 +150,12 @@ STDMETHODIMP CTextService::OnPreservedKey(ITfContext* context, REFGUID guid,
   *eaten = FALSE;
   if (!IsEqualGUID(guid, c_guidToggleAsciiKey)) return S_OK;
   if (!_EngineReady() || _IsKeyboardDisabled()) return S_OK;
+
+  // Shift＋标点不是轻敲。标志位用一次就清，这样下一次真的轻敲能切换。
+  if (_shiftUsedWithKey) {
+    _shiftUsedWithKey = false;
+    return S_OK;
+  }
 
   // Leaving Chinese mode mid-code would otherwise strand the pre-edit text in
   // the application.

@@ -121,6 +121,13 @@ constexpr size_t kUserRecall = 3;
 // 不是防误选 —— 误选靠「最近用过的在前」自己纠正。
 constexpr size_t kUserMaxLines = 2000;
 
+// 整串码拼不出来时，最多允许把末尾这么多位当成「还没打完／打错了」而退回去
+// 重试。定 3 位是有依据的：一个字的码最多多出结构位 + 两个部件位，正好三位，
+// 所以「少打一个字的尾巴」这件事一定落在 3 位以内。再往上退就不是兜底而是
+// 猜了 —— 退五位六位之后剩下的那个词跟用户打的码已经没什么关系，端到候选
+// 窗里只会干扰。顺带把兜底的代价钉死在 3 次 beam search 以内。
+constexpr size_t kMaxFallbackTail = 3;
+
 // 只认 a-z；分隔符吃掉；别的一概不认 —— 混进一个数字就当整串不是码，
 // 悄悄抹掉它会让 suyaozz9 解成「诉呀哦」，那是无中生有。
 std::string NormalizeKeys(const std::string& raw) {
@@ -339,9 +346,24 @@ std::vector<std::wstring> ColumnarDecoder::Search(const std::string& raw,
   }
   if (splits.empty()) return result;
 
-  // 字多的解排前面：同一串码若能解成更长的词，那通常就是本意。
+  // 一个切法「把码用满了几列」：尾巴是逐列左对齐填的，一列宽度等于音节数。
+  // 码表出的永远是整列（足下 = zuxia / zuxiasd / zuxiasdky，没有 zuxias），
+  // 所以尾巴长度正好是列宽的整数倍，才说明这个切法和使用者打的是同一件事。
+  //
+  // 判据从「字多」换成这个，是因为字多会把 xuancibz 判错：xu|an|ci 三个字
+  // 只填得上 2 个结构位（半列），却胜过 xuan|ci —— 后者两个结构位填满，
+  // 正是「选词」。打得满的那个切法才是使用者的本意，字数多少是次要的。
+  auto columns_filled = [](const Split& s) -> int {
+    const size_t m = s.syllables.size();
+    if (m == 0) return -1;
+    if (s.tail.size() % m != 0) return -1;  // 半列：码表不会出这种码
+    return static_cast<int>(s.tail.size() / m);
+  };
   std::stable_sort(splits.begin(), splits.end(),
-                   [](const Split& a, const Split& b) {
+                   [&columns_filled](const Split& a, const Split& b) {
+                     const int ca = columns_filled(a);
+                     const int cb = columns_filled(b);
+                     if (ca != cb) return ca > cb;
                      if (a.syllables.size() != b.syllables.size()) {
                        return a.syllables.size() > b.syllables.size();
                      }
@@ -359,8 +381,20 @@ std::vector<std::wstring> ColumnarDecoder::Search(const std::string& raw,
     size_t length = 0;
     double score = 0.0;
   };
-  std::unordered_map<std::u32string, double> best;
+  // 每个词记下「它是从填得多满的切法来的」和「词本身的分」。前者是主判据：
+  // 半列切法解出来的词一律排在整列切法之后，而不是和它们按分数混在一起 ——
+  // 分数是词频，比不过「使用者到底指定了什么」。
+  struct Ranked {
+    int columns = -1;
+    double value = 0.0;
+    bool Beats(const Ranked& other) const {
+      if (columns != other.columns) return columns > other.columns;
+      return value > other.value;
+    }
+  };
+  std::unordered_map<std::u32string, Ranked> best;
   for (const Split& split : splits) {
+    const int columns = columns_filled(split);
     const size_t n = split.syllables.size();
     std::vector<Cell> cells(n);
     bool usable = true;
@@ -435,21 +469,27 @@ std::vector<std::wstring> ColumnarDecoder::Search(const std::string& raw,
       // 按字数归一，否则长词的分永远比短词高，两种切法就没法比。
       const double value = one.score / static_cast<double>(one.length);
       const std::u32string word(one.word, one.length);
+      const Ranked scored{columns, value};
       const auto seen = best.find(word);
       if (seen == best.end()) {
-        best.emplace(word, value);
-      } else if (value > seen->second) {
-        seen->second = value;
+        best.emplace(word, scored);
+      } else if (scored.Beats(seen->second)) {
+        seen->second = scored;
       }
     }
   }
 
-  std::vector<std::pair<std::u32string, double>> ranked(best.begin(),
+  std::vector<std::pair<std::u32string, Ranked>> ranked(best.begin(),
                                                         best.end());
   std::sort(ranked.begin(), ranked.end(),
-            [](const std::pair<std::u32string, double>& a,
-               const std::pair<std::u32string, double>& b) {
-              if (a.second != b.second) return a.second > b.second;
+            [](const std::pair<std::u32string, Ranked>& a,
+               const std::pair<std::u32string, Ranked>& b) {
+              if (a.second.columns != b.second.columns) {
+                return a.second.columns > b.second.columns;
+              }
+              if (a.second.value != b.second.value) {
+                return a.second.value > b.second.value;
+              }
               return a.first < b.first;  // 平分时定序，免得两次调用顺序不同
             });
   for (const auto& one : ranked) {
@@ -546,8 +586,41 @@ void ColumnarDecoder::RecordChoice(const std::string& raw,
   user_bytes_ = FileBytes(user_path_);
 }
 
+// 整串码一个词都拼不出来的时候，退到最长的拼得出来的前缀。
+//
+// 为什么需要它：列式码是定长的，打到一半的码几乎总是拼不出东西 —— 打
+// henmazzrm，如果 rm 那两位打错了（或者那个字还没打完），整串就是死码，
+// 解码器一声不吭。这不是纠错，是别在用户打字的半途中途突然变哑。
+//
+// 只往回退 kMaxFallbackTail 位，并且把没用上的那几位从 *tail 交出去 ——
+// 调用方必须把它们重新喂回输入法，否则用户打的码就被我们悄悄吃掉了。
+// 这一点是硬要求，不是建议：少了它，兜底就从「帮一把」变成「丢字」。
+std::vector<std::wstring> ColumnarDecoder::SearchLongestPrefix(
+    const std::string& raw, size_t limit, std::string* tail) const {
+  std::vector<std::wstring> result;
+  if (!ready_ || limit == 0) return result;
+
+  const std::string keys = NormalizeKeys(raw);
+  // 前缀自己至少得有 2 位（Search 的下限），所以码不够长就没得退。
+  if (keys.size() < 3) return result;
+  const size_t shortest =
+      keys.size() > kMaxFallbackTail ? keys.size() - kMaxFallbackTail : 2;
+  for (size_t length = keys.size() - 1; length >= shortest; --length) {
+    if (length < 2) break;
+    result = Search(keys.substr(0, length), limit);
+    if (!result.empty()) {
+      if (tail) *tail = keys.substr(length);
+      return result;
+    }
+  }
+  result.clear();
+  return result;
+}
+
 std::vector<std::wstring> ColumnarDecoder::Decode(const std::string& raw,
-                                                  size_t limit) {
+                                                  size_t limit,
+                                                  std::string* fallback_tail) {
+  if (fallback_tail) fallback_tail->clear();
   MaybeReloadUserTable();
 
   std::vector<std::wstring> result;
@@ -569,7 +642,9 @@ std::vector<std::wstring> ColumnarDecoder::Decode(const std::string& raw,
     if (std::find(result.begin(), result.end(), word) != result.end()) continue;
     result.push_back(std::move(word));
   }
-  return result;
+  if (!result.empty()) return result;
+  // 这串码整体是死码。退到最长有效前缀，并报出没用上的尾巴。
+  return SearchLongestPrefix(raw, limit, fallback_tail);
 }
 
 }  // namespace zuxia

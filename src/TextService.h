@@ -102,6 +102,9 @@ class CTextService : public ITfTextInputProcessor,
   BOOL _InitLanguageBar();
   void _UninitLanguageBar();
   BOOL _IsKeyEaten(ITfContext* context, WPARAM key);
+  // Shift 是中/西切换键，而 ：？！（）""《》 全都要按住 Shift 才打得出。
+  // 见 KeyEventSink.cpp 里 _NoteKeyForShiftTap 的注释。
+  void _NoteKeyForShiftTap(WPARAM key);
 
   HRESULT _EnsureComposition(TfEditCookie cookie, ITfContext* context);
   HRESULT _SetCompositionText(TfEditCookie cookie, ITfContext* context,
@@ -122,5 +125,7 @@ class CTextService : public ITfTextInputProcessor,
   CCandidateWindow* candidate_window_ = nullptr;
   CModeButton* lang_bar_ = nullptr;
   zuxia::RimeEngine engine_;
+  // 这一次 Shift 按下期间是否还按过别的键。按过就不是「轻敲 Shift」。
+  bool _shiftUsedWithKey = false;
   LONG _cRef = 1;
 };

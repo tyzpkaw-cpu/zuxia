@@ -125,6 +125,51 @@ static void Check(const char* keys, const char* expected_first, int min_count,
 }
 
 
+// 死码兜底：整串拼不出来时退到最长有效前缀，并如实报出没用上的尾巴。
+// 尾巴那一项是硬要求 —— 输入法那边靠它把用户按过的键喂回去。
+static void CheckFallback(const char* keys, const char* expected_first,
+                          const char* expected_tail,
+                          zuxia::ColumnarDecoder* decoder) {
+  ++checks;
+  std::string tail;
+  const std::vector<std::wstring> words = decoder->Decode(keys, 9, &tail);
+  std::string got;
+  for (size_t i = 0; i < words.size() && i < 3; ++i) {
+    if (i) got += "/";
+    got += Utf8(words[i]);
+  }
+  std::printf("%-22s -> %-24s tail=%s\n", keys,
+              got.empty() ? "(empty)" : got.c_str(),
+              tail.empty() ? "(none)" : tail.c_str());
+  const bool want_empty = expected_first[0] == 0;
+  const bool ok = want_empty
+                      ? (words.empty() && tail.empty())
+                      : (!words.empty() && Utf8(words[0]) == expected_first &&
+                         tail == expected_tail);
+  if (!ok) {
+    ++failures;
+    std::printf("  FAIL: want %s tail=%s\n",
+                want_empty ? "(empty)" : expected_first, expected_tail);
+  }
+}
+
+// 结构位只认 zsbpd。别的字母不许被当成结构位解出词来 —— 那说明分段规则
+// 漏了。注意兜底是另一回事：退到前缀之后出结果是允许的，尾巴非空就证明
+// 它没把那几位当结构位用。所以这里判的是「整串码本身解出了什么」。
+static void CheckRejected(const char* keys, zuxia::ColumnarDecoder* decoder) {
+  ++checks;
+  std::string tail;
+  const std::vector<std::wstring> words = decoder->Decode(keys, 9, &tail);
+  const bool ok = words.empty() || !tail.empty();
+  std::printf("%-22s -> %s tail=%s\n", keys,
+              words.empty() ? "(empty)" : Utf8(words[0]).c_str(),
+              tail.empty() ? "(none)" : tail.c_str());
+  if (!ok) {
+    ++failures;
+    std::printf("  FAIL: the whole code must not decode\n");
+  }
+}
+
 static void Assert(const char* label, bool ok) {
   ++checks;
   std::printf("  %-52s %s\n", label, ok ? "ok" : "FAIL");
@@ -261,8 +306,19 @@ int main(int argc, char** argv) {
   // 入 同样是独体字；它以前落在兜底档 p，是那 214 个错判之一。
   Check("rud", "\xe5\x85\xa5", 1, &decoder);                             // 入
   Check("rudr", "\xe5\x85\xa5", 1, &decoder);                            // 入
-  Check("suyaoxx", "", 0, &decoder);
-  Check("suyaozz9", "", 0, &decoder);
+  CheckRejected("suyaoxx", &decoder);
+  CheckRejected("suyaozz9", &decoder);
+  // 「码打得满」压过「字多」：选词把结构列填满了，选此只是碰巧也解得通。
+  Check("xuancibz", "\xe9\x80\x89\xe8\xaf\x8d", 3, &decoder);       // 选词
+
+  std::printf("\nfallback to the longest valid prefix:\n");
+  // 尾巴 h 没用上，交出去让输入法接着组字。
+  CheckFallback("zuxiasdkh", "\xe8\xb6\xb3\xe4\xb8\x8b", "h", &decoder);
+  CheckFallback("henmazzrm", "\xe5\xbe\x88\xe5\x90\x97", "rm", &decoder);
+  // 退到底也拼不出来就老实交白卷，不能硬凑。
+  CheckFallback("qqqqq", "", "", &decoder);
+  // 整串本来就解得通的时候不许有尾巴 —— 有尾巴就等于凭空吃掉了几位码。
+  CheckFallback("suyaoszcw", "\xe8\x8b\x8f\xe7\x91\xb6", "", &decoder);
 
   CheckRecall(&decoder);
 

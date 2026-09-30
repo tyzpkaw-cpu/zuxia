@@ -33,8 +33,13 @@ class ColumnarDecoder {
   // keys 是已经打出的那串原始按键（只认 a-z）。返回最多 limit 个词，
   // 好的在前。拼不出来就返回空。
   //
+  // 整串码拼不出来时会退到最长有效前缀（见 .cpp 里的 SearchLongestPrefix）。
+  // 这时候 *fallback_tail 收下没用上的那几位按键，调用方必须把它们重新交回
+  // 输入法；不给这个参数就等于放弃兜底结果的完整性，别那样用。
+  //
   // 不是 const：会顺手看一眼用户表有没有被别的宿主进程追加过。
-  std::vector<std::wstring> Decode(const std::string& keys, size_t limit);
+  std::vector<std::wstring> Decode(const std::string& keys, size_t limit,
+                                   std::string* fallback_tail = nullptr);
 
   // 回流。用户从解码候选里选中过什么，就记在这张小表里，下次同一串码把它
   // 前置。精确命中，不动 beam search 的顺序 —— 打满档位的确定性不能被学习
@@ -64,6 +69,10 @@ class ColumnarDecoder {
   // 纯 beam search，不掺用户表。Decode 在它外面套一层前置。
   std::vector<std::wstring> Search(const std::string& keys,
                                    size_t limit) const;
+  // 死码兜底：退到最长有效前缀，把没用上的尾巴放进 *tail。
+  std::vector<std::wstring> SearchLongestPrefix(const std::string& keys,
+                                                size_t limit,
+                                                std::string* tail) const;
   void MaybeReloadUserTable();
 
   std::unordered_map<std::string, std::vector<char32_t>> codes_;

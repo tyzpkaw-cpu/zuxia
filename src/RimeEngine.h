@@ -45,6 +45,10 @@ class RimeEngine {
 
   // Western (ASCII) input mode. While it is on the text service stays out of
   // the way and lets every key reach the application unchanged.
+  // Rime 此刻收下的那串原始按键。组字窗里的 preedit 是装饰过的，「哪几个
+  // 键真的进去了」只有这个说得准 —— 自检和排查按键丢失要用。
+  std::string RawInput() const;
+
   bool IsAsciiMode() const;
   void SetAsciiMode(bool ascii);
   bool ToggleAsciiMode();
@@ -104,6 +108,9 @@ class RimeEngine {
   size_t overlay_base_ = 0;
   // 产生 overlay_ 的那串码，选中时要连同选中的字一起回流。
   std::string overlay_code_;
+  // 死码兜底时没用上的那几位按键。选中兜底候选之后必须把它们重新喂回
+  // Rime，否则用户打的码被我们吃掉了 —— 那是丢字，不是容错。
+  std::string overlay_tail_;
 };
 
 }  // namespace zuxia

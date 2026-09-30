@@ -271,6 +271,47 @@ int main() {
   }
   engine.Clear();
 
+  // 死码兜底。列式码是定长的，打到一半或者打错一位，整串码就谁也拼不出
+  // 来，解码器原先在这种时候一声不吭 —— 而这正是最该帮一把的时候。现在
+  // 它退到最长有效前缀，并且把没用上的那几位原样交回 Rime 接着组字。
+  // 第二条断言是这段改动的全部风险所在：交不回去就等于吃掉用户按过的键。
+  printf("\nDead code falls back to the longest valid prefix:\n");
+  engine.Clear();
+  zuxia::EngineSnapshot dead;
+  for (const char* p = "zuxiasdkh"; *p; ++p) {
+    dead = engine.ProcessKey(static_cast<int>(*p), 0);
+  }
+  // Rime 的 speller 会挡掉它不认的键，所以先看清它到底收下了几个。
+  const std::string raw_before = engine.RawInput();
+  printf("  Rime took: %s\n", raw_before.c_str());
+  size_t fallback_at = dead.candidates.size();
+  for (size_t i = 0; i < dead.candidates.size(); ++i) {
+    if (dead.candidates[i].text == L"足下") {
+      fallback_at = i;
+      break;
+    }
+  }
+  Expect("足下 is still offered for zuxiasdkh (prefix zuxiasdk)",
+         fallback_at < dead.candidates.size() && fallback_at < 9);
+  if (fallback_at < dead.candidates.size() && fallback_at < 9) {
+    const zuxia::EngineSnapshot picked =
+        engine.ProcessKey(static_cast<int>('1' + fallback_at), 0);
+    Expect("picking it commits the prefix word", picked.commit == L"足下");
+    if (raw_before == "zuxiasdkh") {
+      // 全部九个键都进去了，那没用上的 h 必须回到组字里。
+      Expect("the unused tail keeps composing instead of vanishing",
+             !picked.preedit.empty() && engine.RawInput() == "h");
+      printf("  tail left composing: ");
+      Print(picked.preedit);
+      printf("\n");
+    } else {
+      // Rime 自己就没收那个键，也就没有键可丢。
+      Expect("Rime filtered the tail itself, so nothing was lost",
+             engine.RawInput().empty());
+    }
+  }
+  engine.Clear();
+
   // 这一段防的是一个真发生过的回归：日志每行都从文件第 0 字节写起，互相
   // 覆盖，文件长度只等于最长那一行，内容是好几行的碎片 —— 看上去还像份
   // 日志，于是排查真机故障时全靠它，而它在骗人。
