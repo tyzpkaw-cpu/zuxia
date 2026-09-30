@@ -164,11 +164,22 @@ jobs:
           ZX_VERSION: ${{ steps.ver.outputs.version }}
         run: |
           $v = $env:ZX_VERSION
-          gh release create $env:GITHUB_REF_NAME `
-            "dist/ZuxiaSetup-$v.exe" `
-            "dist/ZuxiaSetup-$v.exe.sha256" `
-            "dist/Zuxia/MANIFEST.sha256" `
-            "dist/Zuxia/engine-test.log" `
-            --title "足下输入法 $v" `
-            --notes-file installer/RELEASE-NOTES.md
-          if ($LASTEXITCODE -ne 0) { throw "gh release create 失败" }
+          $tag = $env:GITHUB_REF_NAME
+          $files = @(
+            "dist/ZuxiaSetup-$v.exe",
+            "dist/ZuxiaSetup-$v.exe.sha256",
+            "dist/Zuxia/MANIFEST.sha256",
+            "dist/Zuxia/engine-test.log")
+          # 在网页上点「Publish release」会先把 Release 建好再推标签，这时候
+          # create 会撞车。两条路都得走得通，所以先看一眼有没有。
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $tag 已存在，补挂产物"
+            gh release upload $tag @files --clobber
+            if ($LASTEXITCODE -ne 0) { throw "gh release upload 失败" }
+            gh release edit $tag --title "足下输入法 $v" --notes-file installer/RELEASE-NOTES.md
+            if ($LASTEXITCODE -ne 0) { throw "gh release edit 失败" }
+          } else {
+            gh release create $tag @files --title "足下输入法 $v" --notes-file installer/RELEASE-NOTES.md
+            if ($LASTEXITCODE -ne 0) { throw "gh release create 失败" }
+          }
