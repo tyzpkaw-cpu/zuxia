@@ -195,18 +195,24 @@ def audit_legacy(by_char: dict[str, set[str]]) -> None:
 def audit_versions() -> None:
     print("\n版本号一致性")
     want = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    # setup.rc 里那一行手写的窗口标题和 RELEASE-NOTES.md 里的安装包文件名
+    # 原先都不在清单里 —— 外部复审就是靠 setup.rc:14 发现版本号漏改的。
     spots = {
         "CMakeLists.txt": r"project\([^)]*VERSION\s+([0-9.]+)",
         "data/zuxia.schema.yaml": r"version:\s*[\"']?([0-9.]+)",
         "installer/setup/zxcommon.h": r"ZX_VERSION\s+L?\"([^\"]+)\"",
+        "installer/setup/setup.rc": r"足下输入法 ([0-9][0-9.]*)",
+        "installer/RELEASE-NOTES.md": r"ZuxiaSetup-([0-9][0-9.]*)\.exe",
         "src/RimeEngine.cpp": r"distribution_version\s*=\s*\"([^\"]+)\"",
     }
+    # 判据原先是 startswith：VERSION 写 0.2 时 0.27 也算过，改成 0.27 时
+    # 0.2.0 仍然算过 —— 等于没查。必须严格相等。
+    numeric = want.split("-")[0]
     for rel, pattern in spots.items():
         text = (ROOT / rel).read_text(encoding="utf-8")
         found = re.search(pattern, text)
         got = found.group(1) if found else "(未找到)"
-        check(f"{rel} = {want}", got.startswith(want.split("-")[0]),
-              f"实际 {got}")
+        check(f"{rel} = {numeric}", got == numeric, f"实际 {got}")
     # Third-party trees and the rime-ice sources carry version strings of
     # their own; only our own build inputs have to agree.
     owned = ["CMakeLists.txt", "VERSION", "src", "installer", "data/default.yaml",

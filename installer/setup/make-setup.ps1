@@ -71,6 +71,32 @@ if (-not (Test-Path (Join-Path $Stage 'x64\ZuxiaTSF.dll'))) {
     throw "Missing staged build at $Stage. Run scripts\build.ps1 first."
 }
 
+$version = (Get-Content (Join-Path $Root 'VERSION') -Raw).Trim()
+
+# 版本号写在好几个地方。打包前先对一遍：出货件上印着一个号、安装界面显示
+# 另一个，是最难追的那一类问题，而 setup.rc 里那一行手写的标题以前谁都不查。
+foreach ($spot in @(
+        @{ Path = 'installer\setup\zxcommon.h'; Pattern = 'ZX_VERSION\s+L"([^"]+)"' },
+        @{ Path = 'installer\setup\setup.rc';   Pattern = '足下输入法 ([0-9][0-9.]*)' })) {
+    $text = [IO.File]::ReadAllText((Join-Path $Root $spot.Path), [Text.Encoding]::UTF8)
+    $found = [regex]::Match($text, $spot.Pattern)
+    if (-not $found.Success) { throw "$($spot.Path) 里找不到版本号。" }
+    if ($found.Groups[1].Value -ne $version) {
+        throw "$($spot.Path) 写的是 $($found.Groups[1].Value)，VERSION 是 $version。"
+    }
+}
+
+# 暂存目录是上一次构建留下来的，里面可能有不属于载荷的东西。CI 为了跑引擎
+# 断言会把 engine-test.exe 拷进 dist\Zuxia\x64\，它一度就这么被装进了用户的
+# Program Files。打包前清掉这一类文件；scripts\audit-payload.ps1 还会再查一遍。
+$strays = @(Get-ChildItem $Stage -Recurse -File | Where-Object {
+    $_.Name -match '(?i)(test.*\.exe$|\.pdb$|\.ilk$|\.exp$|\.log$|\.tmp$|\.new$)' })
+foreach ($stray in $strays) {
+    Write-Host ("      dropping non-payload file: " +
+                $stray.FullName.Substring($Stage.Length).TrimStart('\'))
+    Remove-Item $stray.FullName -Force
+}
+
 if ($Sign) {
     Write-Host '[1b/5] Signing the text services...'
     foreach ($arch in @('x64', 'x86')) {
@@ -81,7 +107,40 @@ if ($Sign) {
     }
 }
 
-Write-Host '[2/5] Writing the cabinet directive file...'
+Write-Host '[2/5] Writing the build stamp and cabinet directive file...'
+
+# 出货件必须能自证来自哪一次提交。少了这一条，任何人拿到 exe 都没法判断它
+# 是不是当前代码编出来的 —— 外部复审就是在这里卡住的：他们分析的那个 0.2.0
+# 少了一批已经进了 master 的修复，而包里没有任何线索。
+#
+# 只记确定性的事实（提交号、提交时间、工作区是否干净），不记构建时刻，
+# 这样同一次提交重编出来的 cab 仍然逐字节相同。
+function Get-GitFact {
+    param([string[]]$GitArgs, [string]$Fallback = 'unknown')
+    try {
+        $text = & git -C $Root @GitArgs 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            if ($null -eq $text) { return '' }
+            return (($text -join "`n")).Trim()
+        }
+    } catch { }
+    return $Fallback
+}
+$commit = Get-GitFact @('rev-parse', 'HEAD')
+$commitUtc = Get-GitFact @('show', '-s', '--format=%cI', 'HEAD')
+# --untracked-files=no：生成物（词组码表、解码器 tsv）本来就不进 git，
+# 它们的存在不算「工作区脏」。被改过的源码才算。
+$modified = Get-GitFact @('status', '--porcelain', '--untracked-files=no') ''
+$buildInfo = @(
+    'zuxia-build-info=1',
+    "version=$version",
+    "commit=$commit",
+    "commit-utc=$commitUtc",
+    ("tree=" + $(if ($modified) { 'dirty' } else { 'clean' }))
+) -join "`n"
+[IO.File]::WriteAllText((Join-Path $Stage 'BUILD-INFO.txt'), $buildInfo + "`n",
+    [Text.Encoding]::ASCII)
+Write-Host "      commit $commit ($(if ($modified) { 'dirty tree' } else { 'clean tree' }))"
 # A manifest of the payload, written before the cabinet so that it
 # travels inside it. It describes the files as staged, which are
 # exactly the files the installer extracts -- so any device can prove
@@ -185,7 +244,6 @@ $batch = Join-Path $SetupDir 'build-installer.bat'
 & cmd.exe /c "`"$vcvars`" >nul 2>&1 && `"$batch`""
 if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
 
-$version = (Get-Content (Join-Path $Root 'VERSION') -Raw).Trim()
 New-Item -ItemType Directory -Path $Out -Force | Out-Null
 $final = Join-Path $Out "ZuxiaSetup-$version.exe"
 Copy-Item (Join-Path $SetupDir 'ZuxiaSetup.exe') $final -Force

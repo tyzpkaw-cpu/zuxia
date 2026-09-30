@@ -114,22 +114,25 @@ jobs:
           pwsh tools/build-engine-test.ps1 -Arch x64
           Copy-Item tools/engine-test.exe dist/Zuxia/x64/ -Force
           Push-Location dist/Zuxia/x64
-          .\engine-test.exe 2>&1 | Tee-Object -FilePath ../engine-test.log
+          .\engine-test.exe 2>&1 | Tee-Object -FilePath ../../engine-test.log
           $code = $LASTEXITCODE
           Pop-Location
+          # 测试程序绝不能留在暂存目录里 —— 下一步就是从这个目录打包，它会
+          # 跟着装进用户的 Program Files。日志同理，写到 dist\ 而不是暂存目录。
+          Remove-Item dist/Zuxia/x64/engine-test.exe -Force
           if ($code -ne 0) { throw "engine-test 有断言没过" }
 
       - name: 打单文件安装包
         shell: pwsh
         run: pwsh installer/setup/make-setup.ps1 -SkipBuild
 
-      - name: 核对载荷清单
+      # 这一步原先只是打印清单行数，对不对都放行。外部复审据此判定发布门禁
+      # 形同虚设，而且实际出过事：用户装到的 0.2.0 不是当时 master 编出来的。
+      # 现在每一条都是断言 —— 清单逐条重算、出货数据与 HEAD 逐字节比对、
+      # DLL 里必须有只有新代码才有的诊断串、载荷里不许夹带测试程序。
+      - name: 载荷门禁
         shell: pwsh
-        run: |
-          Get-Content dist/Zuxia/MANIFEST.sha256 | Measure-Object -Line
-          Get-Content "dist/ZuxiaSetup-$($env:ZX_VERSION).exe.sha256"
-        env:
-          ZX_VERSION: ${{ steps.ver.outputs.version }}
+        run: pwsh scripts/audit-payload.ps1
 
       - name: 上传安装包
         uses: actions/upload-artifact@v4
@@ -139,7 +142,8 @@ jobs:
             dist/ZuxiaSetup-*.exe
             dist/ZuxiaSetup-*.exe.sha256
             dist/Zuxia/MANIFEST.sha256
-            dist/Zuxia/engine-test.log
+            dist/Zuxia/BUILD-INFO.txt
+            dist/engine-test.log
           if-no-files-found: error
           retention-days: 30
 
@@ -165,17 +169,33 @@ jobs:
         run: |
           $v = $env:ZX_VERSION
           $tag = $env:GITHUB_REF_NAME
+          # 标签与 VERSION 原先从不比对。打错一个字（v0.2.1 而 VERSION 还是
+          # 0.2.0），发出去的 Release 标题、附件名和文件里的版本号就三样。
+          if ($tag -ne "v$v") {
+            throw "标签 $tag 与 VERSION ($v) 不一致。先改 VERSION 再打标签。"
+          }
           $files = @(
             "dist/ZuxiaSetup-$v.exe",
             "dist/ZuxiaSetup-$v.exe.sha256",
             "dist/Zuxia/MANIFEST.sha256",
-            "dist/Zuxia/engine-test.log")
+            "dist/Zuxia/BUILD-INFO.txt",
+            "dist/engine-test.log")
           # 在网页上点「Publish release」会先把 Release 建好再推标签，这时候
           # create 会撞车。两条路都得走得通，所以先看一眼有没有。
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
+            # 原先这里用 --clobber，等于「同名附件一律静默覆盖」。已经发出去
+            # 的哈希被悄悄换掉，是最坏的一种发布事故：别人算出来的校验值对不
+            # 上，而没有任何记录说明换过。所以有同名附件就停下来让人处理。
+            $existing = (gh release view $tag --json assets --jq '.assets[].name') -split "`n"
+            $clash = @($files | ForEach-Object { Split-Path $_ -Leaf } |
+                       Where-Object { $existing -contains $_ })
+            if ($clash.Count -gt 0) {
+              throw ("Release $tag 上已经有同名附件：" + ($clash -join ', ') +
+                     "。要重发请先删掉这些附件或换一个版本号。")
+            }
             Write-Host "Release $tag 已存在，补挂产物"
-            gh release upload $tag @files --clobber
+            gh release upload $tag @files
             if ($LASTEXITCODE -ne 0) { throw "gh release upload 失败" }
             gh release edit $tag --title "足下输入法 $v" --notes-file installer/RELEASE-NOTES.md
             if ($LASTEXITCODE -ne 0) { throw "gh release edit 失败" }
