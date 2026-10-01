@@ -102,7 +102,9 @@ foreach ($member in @('BUILD-INFO.txt',
                       'x64\ZuxiaSettings.exe',
                       'data\zuxia.schema.yaml', 'data\zuxia.dict.yaml',
                       'data\zuxia.extended.dict.yaml', 'data\zuxia.decoder.tsv',
-                      'data\default.yaml')) {
+                      'data\zuxia.parts.tsv', 'data\default.yaml',
+                      'data\lua\zuxia_datetime.lua', 'data\lua\zuxia_lunar.lua',
+                      'data\lua\zuxia_lunar_data.lua')) {
     Check "载荷含 $member" ($actual.ContainsKey($member))
 }
 
@@ -118,24 +120,29 @@ Check '载荷里没有测试程序、调试符号或日志' ($strays.Count -eq 0
 # 「工作区就是 HEAD」由上面那条 tree=clean 保证，两条合起来等于「出货的数据
 # 就是这一次提交里的数据」。不直接跟 git blob 比，是因为 blob 号会受行尾
 # 转换（core.autocrlf）影响，比出来的差异跟正确性无关。
-$sourceData = @(Get-ChildItem (Join-Path $Root 'data') -File |
-                Where-Object { $_.Extension -in @('.yaml', '.tsv') })
+# 按相对路径比（data\lua\ 这样的子目录也算在内），跟 CMakeLists.txt 里
+# install(DIRECTORY data/ … PATTERN "*.yaml" PATTERN "*.tsv" PATTERN "*.lua")
+# 装的是同一批文件。
+$dataRoot = Join-Path $Root 'data'
+$sourceData = @(Get-ChildItem $dataRoot -Recurse -File |
+                Where-Object { $_.Extension -in @('.yaml', '.tsv', '.lua') })
 Check '仓库 data/ 下有数据文件' ($sourceData.Count -gt 0) "$($sourceData.Count) 个"
+$sourceRel = @()
 foreach ($file in $sourceData) {
-    $staged = Join-Path $Stage "data\$($file.Name)"
+    $rel = 'data\' + $file.FullName.Substring($dataRoot.Length).TrimStart('\')
+    $sourceRel += $rel
+    $staged = Join-Path $Stage $rel
     if (-not (Test-Path $staged)) {
-        Check "出货的 data\$($file.Name) 存在" $false '载荷里没有这个文件'
+        Check "出货的 $rel 存在" $false '载荷里没有这个文件'
         continue
     }
     $ok = (Get-FileHash $staged -Algorithm SHA256).Hash -eq
           (Get-FileHash $file.FullName -Algorithm SHA256).Hash
-    Check "出货的 data\$($file.Name) 与仓库里那一份逐字节相同" $ok
+    Check "出货的 $rel 与仓库里那一份逐字节相同" $ok
 }
 # 反过来也要查：载荷里不许有仓库 data/ 下没有的数据文件（上一次构建的残留）。
-$sourceNames = @($sourceData | ForEach-Object { $_.Name })
 $extraData = @($actual.Keys | Where-Object { $_ -like 'data\*' } |
-               ForEach-Object { Split-Path $_ -Leaf } |
-               Where-Object { $sourceNames -notcontains $_ })
+               Where-Object { $sourceRel -notcontains $_ })
 Check '载荷里没有仓库里不存在的数据文件' ($extraData.Count -eq 0) ($extraData -join ', ')
 
 # --- 6. 出货的 DLL 真的带着 HEAD 的代码 -------------------------------------

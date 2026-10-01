@@ -40,8 +40,18 @@ class ColumnarDecoder {
   // 输入法；不给这个参数就等于放弃兜底结果的完整性，别那样用。
   //
   // 不是 const：会顺手看一眼用户表有没有被别的宿主进程追加过。
+  //
+  // *columns（可不给）收下排第一的那个结果「把码用满了几列」：0 是纯拼音，
+  // >=1 是带了结构/部件的列式码，-1 是半列或兜底。RimeEngine 靠它决定解码
+  // 结果要不要排到 Rime 前面。
   std::vector<std::wstring> Decode(const std::string& keys, size_t limit,
-                                   std::string* fallback_tail = nullptr);
+                                   std::string* fallback_tail = nullptr,
+                                   int* columns = nullptr);
+
+  // 这个词能不能就是这串码：存在一种切法，词的每个字都落在它那一列的码上。
+  // RimeEngine 用它检查 Rime 的首选是不是照着列打出来的 —— Rime 的连打成句
+  // 会把 lanyuezd 读成「蓝＋刖(yuezd)」，那不是这串列式码的意思。
+  bool Fits(const std::string& keys, const std::wstring& word) const;
 
   // 回流。用户从解码候选里选中过什么，就记在这张小表里，下次同一串码把它
   // 前置。精确命中，不动 beam search 的顺序 —— 打满档位的确定性不能被学习
@@ -68,10 +78,22 @@ class ColumnarDecoder {
     char third = 0;
   };
 
+  // 一种切法：前面切成拼音音节，剩下的是逐列的结构/部件尾巴。
+  struct Split {
+    std::vector<std::string> syllables;
+    std::string tail;
+  };
+
   const std::vector<char32_t>* Lookup(const Cell& cell) const;
+  // 全部合法切法，按 Search 的优先次序排好、截到上限。
+  std::vector<Split> SplitKeys(const std::string& keys) const;
+  // 尾巴把几列填满了；半列返回 -1。
+  static int ColumnsFilled(const Split& split);
+  // 尾巴按列分派到每个字；不合法返回 false。
+  static bool AssignColumns(const Split& split, std::vector<Cell>* cells);
   // 纯 beam search，不掺用户表。Decode 在它外面套一层前置。
-  std::vector<std::wstring> Search(const std::string& keys,
-                                   size_t limit) const;
+  std::vector<std::wstring> Search(const std::string& keys, size_t limit,
+                                   int* top_columns = nullptr) const;
   // 死码兜底：退到最长有效前缀，把没用上的尾巴放进 *tail。
   std::vector<std::wstring> SearchLongestPrefix(const std::string& keys,
                                                 size_t limit,

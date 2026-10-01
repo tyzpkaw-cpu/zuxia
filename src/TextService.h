@@ -84,9 +84,12 @@ class CTextService : public ITfTextInputProcessor,
   void _CancelComposition(TfEditCookie cookie, ITfContext* context);
 
   void _HideCandidateWindow();
-  // Update parts window with the highlighted candidate text (realtime).
-  // Pass empty string to hide. Checks CurrentAppearance().show_parts_window.
-  void _UpdatePartsWindow(const std::wstring& highlighted_text);
+  // Shows the components of `text` (the highlighted candidate, or what was
+  // just committed) in the parts window. An empty string changes nothing;
+  // the window keeps its last word. Hides it when learning mode is off.
+  void _UpdatePartsWindow(const std::wstring& text);
+  // Focus left the document, the mode went Western, and the like.
+  void _HidePartsWindow();
   bool _EngineReady() const { return engine_.Ready(); }
   bool _EngineComposing() const { return engine_.IsComposing(); }
   zuxia::RimeEngine& _Engine() { return engine_; }
@@ -124,6 +127,9 @@ class CTextService : public ITfTextInputProcessor,
   DWORD _dwModeSinkCookie = TF_INVALID_COOKIE;
   CCandidateWindow* candidate_window_ = nullptr;
   zuxia::CPartsWindow* parts_window_ = nullptr;
+  // True between the first candidate update of a composition and the moment
+  // the candidate window is hidden again.
+  bool parts_session_open_ = false;
   CModeButton* lang_bar_ = nullptr;
   zuxia::RimeEngine engine_;
   bool _shiftUsedWithKey = false;

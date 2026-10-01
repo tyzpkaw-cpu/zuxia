@@ -37,6 +37,7 @@ void Print(const std::wstring& text) {
 }
 
 int failures = 0;
+int checks = 0;
 
 long long FileSize(const std::wstring& path) {
   WIN32_FILE_ATTRIBUTE_DATA info = {};
@@ -70,8 +71,55 @@ void Case(zuxia::RimeEngine* engine, const char* keys, int show) {
 }
 
 void Expect(const char* label, bool ok) {
+  ++checks;
   printf("  %-52s %s\n", label, ok ? "PASS" : "FAIL");
-  if (!ok) ++failures;
+  if (!ok) {
+    ++failures;
+    // GitHub Actions 的工作流命令：失败的断言直接出现在运行页面的注解里，
+    // 不用翻日志。
+    printf("::error title=engine-test::%s\n", label);
+  }
+  fflush(stdout);
+}
+
+zuxia::EngineSnapshot Type(zuxia::RimeEngine* engine, const char* keys) {
+  engine->Clear();
+  zuxia::EngineSnapshot snapshot;
+  for (const char* p = keys; *p; ++p) {
+    snapshot = engine->ProcessKey(static_cast<int>(*p), 0);
+  }
+  return snapshot;
+}
+
+std::wstring Joined(const zuxia::EngineSnapshot& snapshot, size_t limit) {
+  std::wstring out;
+  for (size_t i = 0; i < snapshot.candidates.size() && i < limit; ++i) {
+    if (!out.empty()) out += L" | ";
+    out += snapshot.candidates[i].text;
+  }
+  return out.empty() ? L"(no candidates)" : out;
+}
+
+// 关键用例的候选也作为注解打出来：真机验收之前，在运行页面上就能看到
+// dt、nl、揽月这几串码实际出了什么。
+void Notice(const char* keys, const zuxia::EngineSnapshot& snapshot) {
+  printf("::notice title=%s::", keys);
+  Print(Joined(snapshot, 9));
+  printf("\n");
+  fflush(stdout);
+}
+
+bool Contains(const std::wstring& text, const wchar_t* part) {
+  return text.find(part) != std::wstring::npos;
+}
+
+// 选中一个候选的两种合法结果：整串落下（commit 就是它）；或者它只吃掉前面
+// 几位码（Rime 的部分匹配，比如 lanyue 对 lanyuezdly），那就不落字，组字串
+// 以它开头、剩下的码接着打。
+bool TookCandidate(const zuxia::EngineSnapshot& after, const std::wstring& want) {
+  if (after.commit == want) return true;
+  return after.commit.empty() && !want.empty() &&
+         after.preedit.compare(0, want.size(), want) == 0;
 }
 
 std::wstring CommentOf(zuxia::RimeEngine* engine, const char* keys,
@@ -398,6 +446,131 @@ int main() {
     engine.Clear();
   }
 
+  // 触发码（0.4.2）：dt 出日期时间，nl 出农历，后面可以跟一个冒号。两个
+  // Lua 脚本在 data\lua\ 下，由 rime.dll 自带的 librime-lua 加载；这一段
+  // 同时验了「脚本装进去了」「方案里的 recognizer / matcher 接对了」「冒号
+  // 进了组字串而不是被当成标点落下」。
+  printf("\nTrigger codes dt (date and time) and nl (lunar date):\n");
+  const char* triggers[] = {"dt", "dt:", "nl", "nl:"};
+  for (const char* keys : triggers) {
+    const zuxia::EngineSnapshot got = Type(&engine, keys);
+    printf("  %-5s -> ", keys);
+    Print(Joined(got, 9));
+    printf("\n");
+    Notice(keys, got);
+    const bool lunar = keys[0] == 'n';
+    char label[96] = {};
+    sprintf_s(label, "%s offers candidates", keys);
+    Expect(label, got.candidates.size() >= 7);
+    sprintf_s(label, "%s commits nothing while typing", keys);
+    Expect(label, got.commit.empty() && got.composing);
+    sprintf_s(label, "%s keeps every key it was given", keys);
+    Expect(label, engine.RawInput() == keys);
+    if (got.candidates.empty()) continue;
+    const std::wstring& first = got.candidates[0].text;
+    if (lunar) {
+      sprintf_s(label, "%s first candidate is a lunar month and day", keys);
+      Expect(label, Contains(first, L"\u6708") &&  // 月
+                        first.find_first_of(L"0123456789") == std::wstring::npos);
+      bool says_lunar = false;
+      for (const zuxia::Candidate& c : got.candidates) {
+        if (Contains(c.text, L"\u519c\u5386")) says_lunar = true;  // 农历
+      }
+      sprintf_s(label, "%s offers a candidate starting with nongli", keys);
+      Expect(label, says_lunar);
+    } else {
+      sprintf_s(label, "%s first candidate is year-month-day", keys);
+      Expect(label, Contains(first, L"\u5e74") && Contains(first, L"\u6708") &&
+                        Contains(first, L"\u65e5"));  // 年 月 日
+    }
+  }
+  {
+    const zuxia::EngineSnapshot typed = Type(&engine, "dt");
+    if (!typed.candidates.empty()) {
+      const zuxia::EngineSnapshot picked = engine.ProcessKey('1', 0);
+      Expect("dt then 1 commits the date", picked.commit == typed.candidates[0].text);
+      Expect("and nothing is left composing", !picked.composing);
+    }
+    engine.Clear();
+  }
+  // 码表里没有以 dt / nl 开头的码；触发码只认整串，打到一半的码里出现
+  // 这两个字母不受影响。
+  {
+    const zuxia::EngineSnapshot date = Type(&engine, "dt");
+    const std::wstring today =
+        date.candidates.empty() ? std::wstring() : date.candidates[0].text;
+    const zuxia::EngineSnapshot longer = Type(&engine, "dtx");
+    bool leaked = false;
+    for (const zuxia::Candidate& c : longer.candidates) {
+      if (!today.empty() && c.text == today) leaked = true;
+    }
+    Expect("dtx is not a trigger (no date candidate)", !leaked);
+    engine.Clear();
+  }
+
+  // 整字作部件（0.4.2）：月 是独体字，没有可拆的部件，它自己当部件，部件码
+  // 取它的读音首字母 y。揽月 = 揽(左右 z) 月(独体 d)，部件串 l(览) y(月)。
+  // 0.4.1 打 lanyuezdly 出不来揽月。
+  printf("\nWhole character as its own component (lanyue):\n");
+  const char* lanyue_codes[] = {"lanyuezd", "lanyuezdly", "lanyuezdlj"};
+  for (const char* keys : lanyue_codes) {
+    const zuxia::EngineSnapshot got = Type(&engine, keys);
+    printf("  %-11s -> ", keys);
+    Print(Joined(got, 9));
+    printf("\n");
+    Notice(keys, got);
+    char label[96] = {};
+    sprintf_s(label, "%s puts lanyue first", keys);
+    Expect(label, !got.candidates.empty() &&
+                      got.candidates[0].text == L"\u63fd\u6708");  // 揽月
+  }
+  engine.Clear();
+
+  // 解码器带头时整页是重排过的：数字键、上下键加空格、标点，落下的都必须
+  // 是看得见的那一条。每个位置都按一遍（每次重新打码，回流会改顺序，所以
+  // 跟当次的快照比）。
+  printf("\nSelecting on a page the decoder leads:\n");
+  {
+    const zuxia::EngineSnapshot first = Type(&engine, "lanyuezdly");
+    const size_t count = first.candidates.size() < 9 ? first.candidates.size() : 9;
+    bool all_match = count > 0;
+    for (size_t i = 0; i < count; ++i) {
+      const zuxia::EngineSnapshot page = Type(&engine, "lanyuezdly");
+      if (i >= page.candidates.size()) break;
+      const std::wstring want = page.candidates[i].text;
+      const zuxia::EngineSnapshot picked =
+          engine.ProcessKey(static_cast<int>('1' + i), 0);
+      if (!TookCandidate(picked, want)) {
+        all_match = false;
+        printf("  #%zu wanted ", i + 1);
+        Print(want);
+        printf(", committed ");
+        Print(picked.commit.empty() ? std::wstring(L"(nothing)") : picked.commit);
+        printf(", composing ");
+        Print(picked.preedit.empty() ? std::wstring(L"(nothing)") : picked.preedit);
+        printf("\n");
+      }
+    }
+    Expect("every number key commits the candidate it labels", all_match);
+
+    const zuxia::EngineSnapshot page = Type(&engine, "lanyuezdly");
+    if (page.candidates.size() >= 2) {
+      const zuxia::EngineSnapshot moved = engine.ProcessKey(0xff54, 0);  // XK_Down
+      Expect("Down moves the highlight to the second candidate",
+             moved.highlighted == 1);
+      const zuxia::EngineSnapshot spaced = engine.ProcessKey(' ', 0);
+      Expect("Space then takes the second candidate",
+             TookCandidate(spaced, page.candidates[1].text));
+    }
+    const zuxia::EngineSnapshot again = Type(&engine, "lanyuezdly");
+    if (!again.candidates.empty()) {
+      const zuxia::EngineSnapshot comma = engine.ProcessKey(',', 0);
+      Expect("a comma commits the highlighted candidate, then the comma",
+             comma.commit == again.candidates[0].text + L"\uff0c");  // ，
+    }
+    engine.Clear();
+  }
+
   // Chinese text wants Chinese marks. The engine is handed the plain ASCII
   // character; librime's punctuator is what turns it into the full-width form.
   printf("\nChinese punctuation:\n");
@@ -470,7 +643,9 @@ int main() {
   Expect("Chinese mode still produces candidates",
          !CommentOf(&engine, "qingzs", L"清").empty());
 
-  printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ALL CHECKS PASSED",
-         failures, failures == 1 ? "" : "s");
+  printf("\n%s (%d checks, %d failure%s)\n",
+         failures ? "FAILED" : "ALL CHECKS PASSED", checks, failures,
+         failures == 1 ? "" : "s");
+  printf("::notice title=engine-test::%d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }

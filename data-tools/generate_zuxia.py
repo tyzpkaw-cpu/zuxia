@@ -415,23 +415,57 @@ def expand_components(char: str, hanzi: dict, ids: dict, names: dict,
     return out
 
 
+def letters_of_name(name: str, hanzi: dict) -> set[str]:
+    """一个部件名称能打成哪些字母：名称头一个字的每个读音的首字母。"""
+    out: set[str] = set()
+    head = name[0] if name else ""
+    for reading in (hanzi.get(head) or {}).get("pinyin", []):
+        reading = strip_tone(reading)
+        if reading:
+            out.add(reading[0])
+    return {c for c in out if c.isalpha()}
+
+
 def letters_for(part: str, names: dict, hanzi: dict) -> set[str]:
     """Every letter this component may be typed as."""
     out: set[str] = set()
     for name in names.get(part, [part]):
-        head = name[0]
-        readings = [strip_tone(p) for p in (hanzi.get(head) or {}).get("pinyin", [])]
-        for reading in readings:
-            if reading:
-                out.add(reading[0])
-    return {c for c in out if c.isalpha()}
+        out |= letters_of_name(name, hanzi)
+    return out
+
+
+def takes_itself_as_part(structure: str, usable: list) -> bool:
+    """这个字能不能把「整个字」当作它唯一的部件，用自己读音的首字母来打。
+
+    两类字可以：
+
+    * 独体字（结构码 d）。GF 0013—2009 对独体字的定义就是「只有一个部件的
+      字」，这个部件就是字本身。数据里给独体字列出的那些「部件」（月 的 冂、
+      二）其实是笔画树上的碎片，不是规范意义上的部件；打字的人看着 月 想到
+      的那个部件就是 月。0.4.1 只认碎片，于是 揽月 只能打 lanyuezdlj（月 取
+      冂），按「览 l、月 y」打 lanyuezdly 出来的是「烂曰」。
+    * 拆不出任何可用部件的字（入 心 舟 竹 非 …，共 34 个读音）。列式解码器
+      一直就是这么给它们补位的（见 generate_phrases.write_decoder_data），
+      单字表这次跟上，两边口径一致。
+
+    这是放宽，不是改码：原来的码一个不少，只是多认一条。
+    """
+    return structure == "d" or not usable
 
 
 def codes_for(pinyin, structure, parts, names, hanzi, use_structure,
-              max_components: int = MAX_COMPONENTS_PER_CODE):
-    """The full ladder of codes, shortest first."""
+              max_components: int = MAX_COMPONENTS_PER_CODE,
+              itself: bool = False):
+    """The full ladder of codes, shortest first.
+
+    itself=True：这个字还可以把整个字当作唯一的部件（见
+    takes_itself_as_part），多认一个「结构码＋自己读音首字母」的码：
+    月 yuedy、入 rudr、竹 zhuzz。
+    """
     stem = pinyin + (structure if use_structure else "")
     ladder = {pinyin, stem}
+    if itself and use_structure and pinyin:
+        ladder.add(stem + pinyin[0])
 
     letter_sets = [letters_for(p, names, hanzi) for p in parts]
     letter_sets = [s for s in letter_sets if s]
@@ -486,7 +520,7 @@ def main() -> int:
                     default=root / "sources/structure-overrides.tsv",
                     help="authoritative 字→结构码 map (see sync_structure.py)")
     ap.add_argument("--out-dir", type=pathlib.Path, default=root.parent / "data")
-    ap.add_argument("--version", default="0.4.1")
+    ap.add_argument("--version", default="0.4.2")
     # The structure key sits between sound and form and is always present.
     #
     # Measured on this table, weighted by character frequency, per (code,
@@ -527,7 +561,12 @@ def main() -> int:
     per_char_codes: list[int] = []
     unnamed: collections.Counter = collections.Counter()
     # parts_rows: collected for zuxia.parts.tsv export (char -> (structure, parts_with_names))
-    parts_rows: list[tuple[str, str, list[tuple[str, list[str]]]]] = []
+    parts_rows: list[tuple[str, str, list[tuple[str, list[str]]], bool]] = []
+    # 一个字的全部读音（无调），拆字窗口里「整字」那一行要列出每个读音的首字母。
+    readings_of: dict[str, list[str]] = collections.defaultdict(list)
+    for char, pinyin, _weight in charset:
+        if pinyin not in readings_of[char]:
+            readings_of[char].append(pinyin)
 
     for char, pinyin, weight in charset:
         source = (hanzi.get(char) or {}).get("decomposition") or ids.get(char, "")
@@ -542,9 +581,13 @@ def main() -> int:
             if p not in names:
                 unnamed[p] += 1
 
+        itself = takes_itself_as_part(structure, usable)
+        if itself:
+            stats["itself_as_part"] += 1
+
         # collect for parts.tsv (deduplicate per char across pinyins)
         parts_with_names = [(p, names.get(p, [])) for p in usable]
-        parts_rows.append((char, structure, parts_with_names))
+        parts_rows.append((char, structure, parts_with_names, itself))
 
         if len(usable) >= 2:
             stats["two_or_more_components"] += 1
@@ -554,7 +597,7 @@ def main() -> int:
             stats["no_component"] += 1
 
         codes = codes_for(pinyin, structure, usable, names, hanzi,
-                          args.structure, args.max_components)
+                          args.structure, args.max_components, itself)
         per_char_codes.append(len(codes))
         for code in codes:
             key = (char, code)
@@ -570,12 +613,16 @@ def main() -> int:
         ):
             handle.write(f"{char}\t{code}\t{weight}\n")
 
-    # Write zuxia.parts.tsv for the parts window (Task 7).
+    # Write zuxia.parts.tsv for the parts window (learning mode).
     # Format per column after char+structure:
-    #   part|name1,name2|letter1letter2|pinyin_of_name1_head
-    # pinyin: toned pinyin of the first character of the first name
-    # (that is what determines the letter key shown to the user).
-    # Only the highest-weight row is kept when a char appears multiple times (rare).
+    #   part|name1,name2|letters|pinyin|letters1:pinyin1,letters2:pinyin2
+    # 第 3 段 letters 是这个部件能打的全部字母；第 4 段是第一个名称头一个字的
+    # 带调拼音；第 5 段逐个名称给出「这个名称打哪几个字母、读什么」，与第 2 段
+    # 的名称一一对应 —— 拆字窗口靠它写出「提手 → T」而不是一串没有对应关系的
+    # 字母。旧版 DLL 只读前四段，多出来的第五段它不看。
+    # 能「整字作部件」的字（独体字、拆不出部件的字）第一列是它自己：
+    #   月|整字|y|yuè|y:yuè
+    # Only the first row is kept when a char appears multiple times (多音字).
     def toned_pinyin_of(ch: str) -> str:
         """Return toned pinyin of ch's first pronunciation, or empty string."""
         row = hanzi.get(ch) or {}
@@ -586,21 +633,30 @@ def main() -> int:
     parts_out = args.out_dir / "zuxia.parts.tsv"
     with parts_out.open("w", encoding="utf-8", newline="\n") as ph:
         ph.write("# Zuxia parts table - generated by generate_zuxia.py - do not edit\n")
-        ph.write("# char<TAB>structure<TAB>part|name1,name2|letters|pinyin<TAB>...\n")
-        for char, structure, pw in parts_rows:
+        ph.write("# char<TAB>structure<TAB>part|names|letters|pinyin|per-name"
+                 "<TAB>...\n")
+        for char, structure, pw, itself in parts_rows:
             if char in seen_chars:
                 continue
             seen_chars.add(char)
             cols = [char, structure]
+            if itself and args.structure:
+                own = "".join(sorted({r[0] for r in readings_of[char] if r}))
+                toned = toned_pinyin_of(char)
+                cols.append(f"{char}|整字|{own}|{toned}|{own}:{toned}")
             for part, part_names in pw:
                 letter_set = sorted(letters_for(part, names, hanzi))
-                names_str = ",".join(part_names) if part_names else part
+                shown = part_names if part_names else [part]
+                names_str = ",".join(shown)
                 # Full toned pinyin for the first character of the first name
                 # (e.g. 人旁 → head char 人 → rén; 水 → shuǐ)
-                first_name = part_names[0] if part_names else part
-                head_char = first_name[0] if first_name else part
-                pinyin = toned_pinyin_of(head_char)
-                cols.append(f"{part}|{names_str}|{''.join(letter_set)}|{pinyin}")
+                pinyin = toned_pinyin_of(shown[0][0]) if shown[0] else ""
+                per_name = ",".join(
+                    "".join(sorted(letters_of_name(n, hanzi))) + ":" +
+                    (toned_pinyin_of(n[0]) if n else "")
+                    for n in shown)
+                cols.append(f"{part}|{names_str}|{''.join(letter_set)}|{pinyin}"
+                            f"|{per_name}")
             ph.write("\t".join(cols) + "\n")
 
     report = {
@@ -618,6 +674,8 @@ def main() -> int:
         "two_or_more_components": stats["two_or_more_components"],
         "one_component": stats["one_component"],
         "no_component": stats["no_component"],
+        # 整字作部件（独体字＋拆不出部件的字），逐（字，读音）对计数。
+        "itself_as_part": stats["itself_as_part"],
         "components_without_a_name": len(unnamed),
         "components_without_a_name_top": unnamed.most_common(20),
         # 并入国标之前 1261 种部件没有名称；之后只剩下「拆到底仍然无名」的几种。

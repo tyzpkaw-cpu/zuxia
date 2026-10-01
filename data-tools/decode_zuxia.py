@@ -94,6 +94,12 @@ class Index:
             if len(groups) == 1:
                 for a in groups[0]:
                     self.by_pyscc[(pinyin, structure, a, a)].add(char)
+            # 整字作部件：独体字也可以只拿自己读音的首字母当唯一的部件
+            # （月 yuedy），与 generate_phrases.write_decoder_data 一致。
+            if structure == "d":
+                own = pinyin[0]
+                self.by_pysc[(pinyin, structure, own)].add(char)
+                self.by_pyscc[(pinyin, structure, own, own)].add(char)
 
         self.max_syllable = max(len(s) for s in self.syllables)
 

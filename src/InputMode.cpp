@@ -375,7 +375,10 @@ void CTextService::_ApplyInputMode() {
     }
   }
   if (_EngineReady()) _Engine().SetAsciiMode(!native);
-  if (!native) _HideCandidateWindow();
+  if (!native) {
+    _HideCandidateWindow();
+    _HidePartsWindow();
+  }
   if (lang_bar_) lang_bar_->Refresh();
   zuxia::LogEvent(L"mode", native ? L"chinese" : L"western");
 }

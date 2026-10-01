@@ -121,7 +121,10 @@ BOOL CTextService::_IsKeyEaten(ITfContext* /*context*/, WPARAM key) try {
 }
 
 STDMETHODIMP CTextService::OnSetFocus(BOOL foreground) ZUXIA_COM_GUARD_BEGIN
-  if (!foreground) _HideCandidateWindow();
+  if (!foreground) {
+    _HideCandidateWindow();
+    _HidePartsWindow();
+  }
   // 按住 Shift 的时候切走窗口，那次 Shift 松开可能落到别的线程去，标志位
   // 会一直挂着，白吞掉下一次真正的轻敲。换焦点就当这一轮结束。
   _shiftUsedWithKey = false;

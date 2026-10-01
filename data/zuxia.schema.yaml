@@ -4,7 +4,7 @@
 schema:
   schema_id: zuxia
   name: "应物音形足下输入方案"
-  version: "0.4.1"
+  version: "0.4.2"
   author:
     - "应物音形足下输入方案"
   description: |
@@ -16,6 +16,7 @@ schema:
     一个部件可有多个通行叫法，多个码都认；没有名称的部件再往里拆一层。
     任意一到三个部件均可，先后顺序不限。
     不使用语言模型、用户学习或云端预测。
+    打 dt 出日期时间，打 nl 出农历。
 
 switches:
   - name: ascii_mode
@@ -25,6 +26,7 @@ switches:
 engine:
   processors:
     - ascii_composer
+    - recognizer
     - speller
     - punctuator
     - selector
@@ -32,14 +34,28 @@ engine:
     - express_editor
   segmentors:
     - ascii_segmentor
+    - matcher
     - abc_segmentor
     - punct_segmentor
     - fallback_segmentor
   translators:
     - punct_translator
     - table_translator
+    # 两个 Lua 脚本在 data/lua/ 下，由 rime.dll 自带的 librime-lua 加载。
+    - lua_translator@*zuxia_datetime
+    - lua_translator@*zuxia_lunar
   filters:
     - uniquifier
+
+# 触发码：打 dt 出日期时间，打 nl 出农历；后面可以跟一个冒号（dt:、nl:）。
+# 两串都是足下码表里的死前缀（没有音节以 dt、nl 开头），不会挡住任何字词。
+# recognizer 让冒号能进组字串（冒号不在 alphabet 里，平时会被当成标点），
+# matcher 把整串认成一段交给上面两个 Lua 翻译器；只有整串正好是 dt、dt:、
+# nl、nl: 时才触发，打到一半的码里出现 dt 不受影响。
+recognizer:
+  patterns:
+    zuxia_datetime: "^dt:?$"
+    zuxia_lunar: "^nl:?$"
 
 # Shift tap switches between Chinese and Western input.
 #

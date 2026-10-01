@@ -15,11 +15,12 @@
 部件位与单字有一处不同：**只取每个字的第一个部件**（左边的 / 上面的 /
 外面的那个），它的任何叫法都认。单字那边是任意部件、任意顺序，词组这边
 做不到 —— 全展开是 568 万行 150 MB，Rime 的表编译不动。真正的「任意部件」
-要靠 docs/列式解码.md 里那个解码器，它不查表，还没移植进 C++。
+靠列式解码器（src/Decoder.cpp，0.4.0 起随 DLL 出货，原理见 docs/列式解码.md），
+它不查这张表，读的是下面 write_decoder_data 写出的 zuxia.decoder.tsv。
 
 这张表不进 git（太大），由 CI 在打包前现生成，见 .github/workflows/。它
-反过来 import 手里那张 1 MB 的单字表 zuxia.dict.yaml —— 方向这么定是因为
-单字表要留在 git 里逐行可审，而它一旦加上 import_tables 就得跟着改。
+反过来 import 单字表 zuxia.dict.yaml（0.3.0 起也不进 git）—— 方向这么定，
+单字表就不必知道词组表的存在，它一旦加上 import_tables 就得跟着改。
 schema 的 translator/dictionary 指向的是这张 extended 表。
 """
 from __future__ import annotations
@@ -144,6 +145,13 @@ def write_decoder_data(path, hanzi, ids, names, charset, overrides, rows,
         if len(groups) == 1:
             for a in groups[0]:
                 codes[stem + a + a].add(char)
+        # 整字作部件（g.takes_itself_as_part）：独体字还可以把整个字当作唯一
+        # 的部件，用自己读音的首字母打 —— 月 yuedy，于是 揽月 = lanyuezdly
+        # （览 l、月 y）。它是另一种拆法，所以只配「第二位重写第一位」，不和
+        # 笔画碎片混搭。拆不出部件的字上面那条补位已经是同一件事。
+        if st == "d":
+            codes[stem + pinyin[0]].add(char)
+            codes[stem + pinyin[0] + pinyin[0]].add(char)
 
     # 二元组：从词频取对数累加。没有它，纯拼时「杨志鹏」会输给「样直鹏」——
     # 每个字单看都更常见，连起来却没人这么写。
@@ -188,7 +196,7 @@ def main() -> int:
     # 就从几秒变成十几秒 —— 那正是 docs/工程排查.md 里记下的那个毛病。
     ap.add_argument("--limit", type=int, default=120000)
     ap.add_argument("--out-dir", type=pathlib.Path, default=root.parent / "data")
-    ap.add_argument("--version", default="0.4.1")
+    ap.add_argument("--version", default="0.4.2")
     ap.add_argument("--report", type=pathlib.Path)
     args = ap.parse_args()
 

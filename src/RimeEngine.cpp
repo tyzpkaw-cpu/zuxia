@@ -182,40 +182,65 @@ bool RimeEngine::EnsureDecoder() {
 // xuancibz 它读成「选＋疵」；两次都有候选，两次都不是要的词，而解码器把
 // 「我想问」排在第一位。有候选就闭嘴，等于把解码器锁死在最需要它的场合外。
 //
-// 现在改成补位：Rime 的候选原样排在前面，解码器填这一页剩下的空位。打得准
-// 的时候第一位一个字不动，打到词库覆盖不到的地方，第二第三位就有救。
+// 0.4.0 改成补位：Rime 的候选原样排在前面，解码器填这一页剩下的空位。可补位
+// 有个洞 —— Rime 的连打成句会把列式码硬读成句子，再加上一串前缀词，一页九个
+// 位置全占满，解码器一个都挤不进来。真机反馈的「揽月打不出来」就是它：
+// lanyuezd 被读成「蓝＋刖(yuezd)」。所以 0.4.2 加了第二种排法：
+//
+//   带头 —— 这串码把结构/部件列填满了（解码器说它是列式码），而 Rime 的首选
+//           不合列（Decoder::Fits：没有哪种切法能让它的每个字落在自己那一列
+//           上），解码结果就排到最前，这一页给 Rime 留最多三位。
+//
+// 纯拼音（woxiangwen）永远是补位，Rime 的首选一个字不动；Rime 的首选本身就
+// 合列（tiandidz → 天地）也是补位。
+void RimeEngine::ResetOverlay() {
+  overlay_.clear();
+  overlay_code_.clear();
+  overlay_tail_.clear();
+  slots_.clear();
+  decoder_leads_ = false;
+  highlight_ = 0;
+  shown_ = EngineSnapshot();
+}
+
 void RimeEngine::FillDecodedCandidates(EngineSnapshot* out) {
   // 候选窗一页放几条。必须与 data/zuxia.schema.yaml 的 menu/page_size 相同，
   // 否则补位要么填不满要么溢出一页；data-tools/audit_zuxia.py 逐版核对。
   constexpr size_t kPageSize = 9;
-  overlay_.clear();
-  overlay_code_.clear();
-  overlay_tail_.clear();
-  overlay_base_ = 0;
+  // 解码器带头时这一页至少给 Rime 留几位：它的前缀词有时正是要的。
+  constexpr size_t kRimeKeptWhenDecoderLeads = 3;
+  ResetOverlay();
   if (!out || out->preedit.empty()) return;
-  // 翻过页之后这一页整页都是 Rime 的，补位只发生在第一页。
+  // 翻过页之后这一页整页都是 Rime 的，解码只发生在第一页。
   if (out->page_no != 0) return;
-  const size_t taken = out->candidates.size();
-  if (taken >= kPageSize) return;
+  // 用户已经先选定了前面一段（部分上屏），get_input 给的仍是整串原始码，
+  // 拿它去解码得出的是「整串」的词 —— 那不是剩下那段码的意思。
+  if (out->selection_start > 0) return;
+  const size_t taken = (std::min)(out->candidates.size(), kPageSize);
   const char* raw = api_->get_input(session_);
   if (!raw || !*raw) return;
   const std::string keys(raw);
   if (keys.size() < 3) return;
   if (!EnsureDecoder()) return;
 
-  const size_t room = kPageSize - taken;
   std::vector<std::wstring> words;
   std::string tail;
+  int columns = -1;
+  bool rime_fits = true;
   try {
     // 多要一些：与 Rime 重复的要丢掉，丢完还得填得满。
     // decoder_ 是进程级静态量，Decode 会读回流表（unordered_map），而
     // RecordChoice 会写它 —— 同进程的另一个线程同时打字就是并发读写，
     // 所以这两处都得拿同一把锁。
     std::lock_guard<std::mutex> guard(decoder_mutex_);
-    words = decoder_.Decode(keys, room + taken, &tail);
+    words = decoder_.Decode(keys, kPageSize + taken, &tail, &columns);
+    if (taken > 0 && tail.empty() && columns >= 1 && !words.empty()) {
+      rime_fits = decoder_.Fits(keys, out->candidates[0].text);
+    }
   } catch (...) {
     return;
   }
+  if (words.empty()) return;
   // 兜底候选只用掉了码的前一段。剩下的那几位必须能原样交回 Rime，所以先
   // 确认它确实是这串码的后缀；确认不了就整批不要 —— 端出一个会吞掉用户
   // 按键的候选，比不端出来糟得多。
@@ -227,90 +252,207 @@ void RimeEngine::FillDecodedCandidates(EngineSnapshot* out) {
     }
     used = keys.substr(0, keys.size() - tail.size());
   }
-  for (const std::wstring& word : words) {
-    if (overlay_.size() >= room) break;
-    bool duplicate = false;
-    for (const Candidate& shown : out->candidates) {
-      if (shown.text == word) {
-        duplicate = true;
-        break;
-      }
-    }
-    if (duplicate) continue;
+  const bool lead = tail.empty() && columns >= 1 && (taken == 0 || !rime_fits);
+
+  const std::vector<Candidate> rime(out->candidates.begin(),
+                                    out->candidates.begin() + taken);
+  std::vector<Candidate> page;
+  std::vector<Slot> slots;
+  std::vector<std::wstring> overlay;
+  auto add_word = [&](const std::wstring& word) {
     Candidate one;
     one.text = word;
-    one.label = std::to_wstring(taken + overlay_.size() + 1);
     // 兜底候选只吃掉码的前一段。在候选窗里把剩下那几位标出来，用户看一眼
     // 就知道「选它不会把 rm 吃掉，rm 还留着接着打」。不标的话这些候选看
     // 上去与精确命中的一模一样，选下去多出一截码会让人以为输入法在乱跳。
     if (!tail.empty()) {
-      one.comment = L"…";
+      one.comment = L"\u2026";
       one.comment.append(tail.begin(), tail.end());
     }
-    out->candidates.push_back(one);
-    overlay_.push_back(word);
-  }
-  if (!overlay_.empty()) {
-    overlay_base_ = taken;
+    Slot slot;
+    slot.overlay = static_cast<int>(overlay.size());
+    slots.push_back(slot);
+    overlay.push_back(word);
+    page.push_back(std::move(one));
+  };
+  auto add_rime = [&](size_t index) {
+    Slot slot;
+    slot.rime = static_cast<int>(index);
+    slots.push_back(slot);
+    page.push_back(rime[index]);
+  };
+  int highlight = 0;
+  if (lead) {
+    const size_t room =
+        kPageSize - (std::min)(taken, kRimeKeptWhenDecoderLeads);
+    for (const std::wstring& word : words) {
+      if (overlay.size() >= room) break;
+      add_word(word);
+    }
+    for (size_t j = 0; j < rime.size() && page.size() < kPageSize; ++j) {
+      if (std::find(overlay.begin(), overlay.end(), rime[j].text) !=
+          overlay.end()) {
+        continue;
+      }
+      add_rime(j);
+    }
+  } else {
+    for (size_t j = 0; j < rime.size(); ++j) add_rime(j);
+    for (const std::wstring& word : words) {
+      if (page.size() >= kPageSize) break;
+      bool duplicate = false;
+      for (const Candidate& shown : rime) {
+        if (shown.text == word) {
+          duplicate = true;
+          break;
+        }
+      }
+      if (duplicate) continue;
+      add_word(word);
+    }
     // Rime 一个都没给时解码器的第一条就是首选；否则高亮归 Rime。
-    if (taken == 0) out->highlighted = 0;
-    // 选中之后要把这串码和选中的字一起记进回流表，所以码得留到那时候。
-    // 兜底时记的是真正用上的那段前缀，否则下次打同样的码前置不到。
-    overlay_code_ = used;
-    overlay_tail_ = tail;
+    if (taken > 0 && out->highlighted >= 0 &&
+        out->highlighted < static_cast<int>(taken)) {
+      highlight = out->highlighted;
+    }
   }
+  // 页上没有解码候选（全被 Rime 占满或全是重复）：一切照 Rime 原样，不接管
+  // 任何按键。
+  if (overlay.empty()) return;
+
+  for (size_t i = 0; i < page.size(); ++i) {
+    page[i].label = std::to_wstring(i + 1);
+  }
+  out->candidates = std::move(page);
+  out->highlighted = highlight;
+  slots_ = std::move(slots);
+  overlay_ = std::move(overlay);
+  decoder_leads_ = lead;
+  highlight_ = highlight;
+  // 选中之后要把这串码和选中的字一起记进回流表，所以码得留到那时候。
+  // 兜底时记的是真正用上的那段前缀，否则下次打同样的码前置不到。
+  overlay_code_ = used;
+  overlay_tail_ = tail;
+  shown_ = *out;
+  shown_.commit.clear();
 }
+
+EngineSnapshot RimeEngine::CommitOverlay(size_t index) {
+  EngineSnapshot out;
+  out.handled = true;
+  if (index >= overlay_.size()) return out;
+  out.commit = overlay_[index];
+  // 回流：这是用户在这串码上的选择，记下来，下次同一串码直接前置。
+  // 同 Decode，写回流表必须持锁。
+  try {
+    std::lock_guard<std::mutex> guard(decoder_mutex_);
+    decoder_.RecordChoice(overlay_code_, out.commit);
+  } catch (...) {
+    // 记不下来不影响这次落字，静默放过。
+  }
+  const std::string tail = overlay_tail_;
+  ResetOverlay();
+  api_->clear_composition(session_);
+  // 兜底候选只吃掉了码的前一段，剩下那几位是用户真按过的键，得原样
+  // 送回去接着组字。落字与组字要在同一个快照里交出去，所以
+  // CTextService::_ApplyRimeSnapshot 必须两样都处理 —— 它以前只处理
+  // 落字，preedit 会被丢掉。
+  if (!tail.empty()) {
+    for (char key : tail) {
+      api_->process_key(session_,
+                        static_cast<int>(static_cast<unsigned char>(key)), 0);
+    }
+    EngineSnapshot after = ReadSnapshot(true);
+    // 理论上喂几个字母不会触发落字，真触发了也不能丢。
+    out.commit += after.commit;
+    out.composing = after.composing;
+    out.preedit = std::move(after.preedit);
+    out.candidates = std::move(after.candidates);
+    out.highlighted = after.highlighted;
+    out.page_no = after.page_no;
+    out.last_page = after.last_page;
+    out.selection_start = after.selection_start;
+    FillDecodedCandidates(&out);
+  }
+  return out;
+}
+
+namespace {
+
+// 会让 Rime 落下「它自己高亮的那条」的标点键。分隔符 ' 不算 —— 它是码的
+// 一部分，speller 收下接着组字。
+bool IsPunctuationKeycode(int keycode) {
+  if (keycode <= 0x20 || keycode >= 0x7f || keycode == '\'') return false;
+  if (keycode >= 'a' && keycode <= 'z') return false;
+  if (keycode >= 'A' && keycode <= 'Z') return false;
+  if (keycode >= '0' && keycode <= '9') return false;
+  return true;
+}
+
+}  // namespace
 
 EngineSnapshot RimeEngine::ProcessKey(int keycode, int modifiers) {
   if (!Ready()) return {};
-  // 解码器交出去的候选 Rime 不知道，选择键得在这里截下来自己落字。落在
-  // overlay_base_ 之前的下标是 Rime 的候选，必须原样放过去。
-  if (!overlay_.empty() && modifiers == 0) {
+  // 页上有解码候选时，这一页是合并过的：选择键、空格、上下键都在这里截下来，
+  // 按「这个位置上是谁」处理。页上没有解码候选时 slots_ 是空的，一切照旧
+  // 交给 Rime。
+  if (!slots_.empty() && modifiers == 0) {
+    // 上下键：高亮在合并后的整页上走。落到 Rime 的候选上时同步给 Rime ——
+    // 标点键让 Rime 落的是它自己高亮的那条，两边必须是同一条。
+    if (keycode == kXkUp || keycode == kXkDown) {
+      const int last = static_cast<int>(slots_.size()) - 1;
+      int next = highlight_ + (keycode == kXkDown ? 1 : -1);
+      if (next < 0) next = 0;
+      if (next > last) next = last;
+      highlight_ = next;
+      const Slot& slot = slots_[static_cast<size_t>(highlight_)];
+      if (slot.rime >= 0 &&
+          RIME_API_AVAILABLE(api_, highlight_candidate_on_current_page)) {
+        api_->highlight_candidate_on_current_page(
+            session_, static_cast<size_t>(slot.rime));
+      }
+      shown_.highlighted = highlight_;
+      EngineSnapshot out = shown_;
+      out.handled = true;
+      return out;
+    }
     int pick = -1;
     if (keycode >= '1' && keycode <= '9') pick = keycode - '1';
-    // 空格落的是高亮那条。Rime 有候选时高亮是它的，空格就该归它。
-    else if (keycode == ' ' && overlay_base_ == 0) pick = 0;
-    const size_t base = overlay_base_;
-    if (pick >= 0 && static_cast<size_t>(pick) >= base &&
-        static_cast<size_t>(pick) - base < overlay_.size()) {
-      EngineSnapshot out;
-      out.handled = true;
-      out.commit = overlay_[static_cast<size_t>(pick) - base];
-      // 回流：这是用户在这串码上的选择，记下来，下次同一串码直接前置。
-      // 同 Decode，写回流表必须持锁。
-      try {
-        std::lock_guard<std::mutex> guard(decoder_mutex_);
-        decoder_.RecordChoice(overlay_code_, out.commit);
-      } catch (...) {
-        // 记不下来不影响这次落字，静默放过。
+    // 空格落的是看得见的那条高亮。
+    else if (keycode == ' ') pick = highlight_;
+    if (pick >= 0 && static_cast<size_t>(pick) < slots_.size()) {
+      const Slot slot = slots_[static_cast<size_t>(pick)];
+      if (slot.overlay >= 0) {
+        return CommitOverlay(static_cast<size_t>(slot.overlay));
       }
-      const std::string tail = overlay_tail_;
-      overlay_.clear();
-      overlay_code_.clear();
-      overlay_tail_.clear();
-      overlay_base_ = 0;
-      api_->clear_composition(session_);
-      // 兜底候选只吃掉了码的前一段，剩下那几位是用户真按过的键，得原样
-      // 送回去接着组字。落字与组字要在同一个快照里交出去，所以
-      // CTextService::_ApplyRimeSnapshot 必须两样都处理 —— 它以前只处理
-      // 落字，preedit 会被丢掉。
-      if (!tail.empty()) {
-        for (char key : tail) {
-          api_->process_key(
-              session_, static_cast<int>(static_cast<unsigned char>(key)), 0);
+      if (slot.rime >= 0 && (decoder_leads_ || keycode == ' ') &&
+          RIME_API_AVAILABLE(api_, select_candidate_on_current_page)) {
+        // 解码器带头时序号与 Rime 的对不上；空格时 Rime 的高亮也未必就是
+        // 看得见的那条。两种情况都按 Rime 自己的下标直接选。选不上（理论上
+        // 不会）就落到下面，照常交给 Rime。
+        if (api_->select_candidate_on_current_page(
+                session_, static_cast<size_t>(slot.rime))) {
+          EngineSnapshot out = ReadSnapshot(true);
+          FillDecodedCandidates(&out);
+          return out;
         }
-        EngineSnapshot after = ReadSnapshot(true);
-        // 理论上喂几个字母不会触发落字，真触发了也不能丢。
-        out.commit += after.commit;
-        out.composing = after.composing;
-        out.preedit = std::move(after.preedit);
-        out.candidates = std::move(after.candidates);
-        out.highlighted = after.highlighted;
-        out.page_no = after.page_no;
-        out.last_page = after.last_page;
-        FillDecodedCandidates(&out);
       }
-      return out;
+      // 补位时前面那几位就是 Rime 自己的序号，数字键原样交给它。
+    }
+    // 标点：看得见的高亮是解码器的词时，先把它落下，再让 Rime 出标点。
+    // 不拦的话 Rime 落的是它自己那条（甚至是原始码串）。兜底候选不拦：
+    // 它后面还挂着要喂回去的尾巴，那几位码归 Rime 处理。
+    if (IsPunctuationKeycode(keycode) && overlay_tail_.empty() &&
+        highlight_ >= 0 && static_cast<size_t>(highlight_) < slots_.size() &&
+        slots_[static_cast<size_t>(highlight_)].overlay >= 0) {
+      EngineSnapshot first = CommitOverlay(
+          static_cast<size_t>(slots_[static_cast<size_t>(highlight_)].overlay));
+      const bool handled = api_->process_key(session_, keycode, modifiers);
+      EngineSnapshot after = ReadSnapshot(handled);
+      after.handled = true;
+      after.commit = first.commit + after.commit;
+      FillDecodedCandidates(&after);
+      return after;
     }
   }
   // 组字到一半按回车：放弃这次组字，什么都不落。
@@ -343,10 +485,7 @@ EngineSnapshot RimeEngine::Snapshot() {
 }
 
 void RimeEngine::Clear() {
-  overlay_.clear();
-  overlay_code_.clear();
-  overlay_tail_.clear();
-  overlay_base_ = 0;
+  ResetOverlay();
   if (Ready()) api_->clear_composition(session_);
 }
 
@@ -479,6 +618,7 @@ EngineSnapshot RimeEngine::ReadSnapshot(bool handled) {
     output.preedit.clear();
   }
   output.highlighted = context.menu.highlighted_candidate_index;
+  output.selection_start = context.composition.sel_start;
   output.page_no = context.menu.page_no;
   output.last_page = context.menu.is_last_page != False;
 
@@ -598,7 +738,7 @@ bool RimeEngine::InitializeRuntime(HMODULE module) {
   traits.user_data_dir = user_data_utf8_.c_str();
   traits.distribution_name = "Zuxia IME";
   traits.distribution_code_name = "zuxia";
-  traits.distribution_version = "0.4.1";
+  traits.distribution_version = "0.4.2";
   traits.app_name = "rime.zuxia";
   traits.min_log_level = 2;
   traits.log_dir = "";

@@ -367,20 +367,11 @@ const std::vector<char32_t>* ColumnarDecoder::Lookup(const Cell& cell) const {
   return found == codes_.end() ? nullptr : &found->second;
 }
 
-std::vector<std::wstring> ColumnarDecoder::Search(const std::string& raw,
-                                                  size_t limit) const {
-  std::vector<std::wstring> result;
-  if (!ready_ || limit == 0) return result;
-
-  const std::string keys = NormalizeKeys(raw);
-  if (keys.size() < 2) return result;
-
-  // 1) 把前缀切成拼音音节。尾巴长度必须落在 [0, 3 × 字数] 内，否则这串码
-  //    不可能是这么多个字 —— 这条约束就是列式码之所以可判定的原因。
-  struct Split {
-    std::vector<std::string> syllables;
-    std::string tail;
-  };
+// 1) 把码切成「拼音音节 + 尾巴」。尾巴长度必须落在 [0, 4 × 字数] 内（结构
+//    一位 + 部件最多三位），否则这串码不可能是这么多个字 —— 这条约束就是
+//    列式码之所以可判定的原因。返回的切法已按 Search 的优先次序排好。
+std::vector<ColumnarDecoder::Split> ColumnarDecoder::SplitKeys(
+    const std::string& keys) const {
   std::vector<Split> splits;
   std::vector<std::string> stack;
   // 显式栈的递归：位置 + 下一个要试的音节长度。
@@ -417,25 +408,12 @@ std::vector<std::wstring> ColumnarDecoder::Search(const std::string& raw,
     frames.pop_back();
     if (!stack.empty()) stack.pop_back();
   }
-  if (splits.empty()) return result;
+  if (splits.empty()) return splits;
 
-  // 一个切法「把码用满了几列」：尾巴是逐列左对齐填的，一列宽度等于音节数。
-  // 码表出的永远是整列（足下 = zuxia / zuxiasd / zuxiasdky，没有 zuxias），
-  // 所以尾巴长度正好是列宽的整数倍，才说明这个切法和使用者打的是同一件事。
-  //
-  // 判据从「字多」换成这个，是因为字多会把 xuancibz 判错：xu|an|ci 三个字
-  // 只填得上 2 个结构位（半列），却胜过 xuan|ci —— 后者两个结构位填满，
-  // 正是「选词」。打得满的那个切法才是使用者的本意，字数多少是次要的。
-  auto columns_filled = [](const Split& s) -> int {
-    const size_t m = s.syllables.size();
-    if (m == 0) return -1;
-    if (s.tail.size() % m != 0) return -1;  // 半列：码表不会出这种码
-    return static_cast<int>(s.tail.size() / m);
-  };
   std::stable_sort(splits.begin(), splits.end(),
-                   [&columns_filled](const Split& a, const Split& b) {
-                     const int ca = columns_filled(a);
-                     const int cb = columns_filled(b);
+                   [](const Split& a, const Split& b) {
+                     const int ca = ColumnsFilled(a);
+                     const int cb = ColumnsFilled(b);
                      if (ca != cb) return ca > cb;
                      if (a.syllables.size() != b.syllables.size()) {
                        return a.syllables.size() > b.syllables.size();
@@ -443,6 +421,99 @@ std::vector<std::wstring> ColumnarDecoder::Search(const std::string& raw,
                      return a.tail.size() < b.tail.size();
                    });
   if (splits.size() > kMaxSegmentations) splits.resize(kMaxSegmentations);
+  return splits;
+}
+
+// 一个切法「把码用满了几列」：尾巴是逐列左对齐填的，一列宽度等于音节数。
+// 码表出的永远是整列（足下 = zuxia / zuxiasd / zuxiasdky，没有 zuxias），
+// 所以尾巴长度正好是列宽的整数倍，才说明这个切法和使用者打的是同一件事。
+//
+// 判据从「字多」换成这个，是因为字多会把 xuancibz 判错：xu|an|ci 三个字
+// 只填得上 2 个结构位（半列），却胜过 xuan|ci —— 后者两个结构位填满，
+// 正是「选词」。打得满的那个切法才是使用者的本意，字数多少是次要的。
+int ColumnarDecoder::ColumnsFilled(const Split& split) {
+  const size_t m = split.syllables.size();
+  if (m == 0) return -1;
+  if (split.tail.size() % m != 0) return -1;  // 半列：码表不会出这种码
+  return static_cast<int>(split.tail.size() / m);
+}
+
+// 尾巴按列分派：tail[i] 是第 i 个字的结构位，tail[(level+1)·n + i] 是它的
+// 第 level+1 个部件。结构位只认 zsbpd；没给结构却给了部件是不合法的 ——
+// 三段是左对齐逐位填的。
+bool ColumnarDecoder::AssignColumns(const Split& split,
+                                    std::vector<Cell>* cells) {
+  const size_t n = split.syllables.size();
+  cells->assign(n, Cell());
+  for (size_t i = 0; i < n; ++i) {
+    Cell& cell = (*cells)[i];
+    cell.syllable = split.syllables[i];
+    if (i < split.tail.size()) {
+      const char key = split.tail[i];
+      if (!IsStructureKey(key)) return false;
+      cell.structure = key;
+    }
+    for (size_t level = 0; level < kMaxComponents; ++level) {
+      const size_t at = (level + 1) * n + i;
+      if (at >= split.tail.size()) break;
+      if (!cell.structure) return false;
+      if (level == 0) {
+        cell.first = split.tail[at];
+      } else if (level == 1) {
+        cell.second = split.tail[at];
+      } else {
+        cell.third = split.tail[at];
+      }
+    }
+  }
+  return true;
+}
+
+bool ColumnarDecoder::Fits(const std::string& raw,
+                           const std::wstring& word) const {
+  if (!ready_ || word.empty()) return false;
+  const std::string keys = NormalizeKeys(raw);
+  if (keys.size() < 2) return false;
+  std::u32string target;
+  for (size_t i = 0; i < word.size(); ++i) {
+    char32_t ch = static_cast<char32_t>(word[i]);
+    if (ch >= 0xD800 && ch <= 0xDBFF && i + 1 < word.size()) {
+      const char32_t low = static_cast<char32_t>(word[i + 1]);
+      if (low >= 0xDC00 && low <= 0xDFFF) {
+        ch = 0x10000 + ((ch - 0xD800) << 10) + (low - 0xDC00);
+        ++i;
+      }
+    }
+    target.push_back(ch);
+  }
+  if (target.size() > kMaxSyllables) return false;
+  std::vector<Cell> cells;
+  for (const Split& split : SplitKeys(keys)) {
+    if (split.syllables.size() != target.size()) continue;
+    if (!AssignColumns(split, &cells)) continue;
+    bool all = true;
+    for (size_t i = 0; i < cells.size() && all; ++i) {
+      const std::vector<char32_t>* chars = Lookup(cells[i]);
+      all = chars != nullptr &&
+            std::find(chars->begin(), chars->end(), target[i]) != chars->end();
+    }
+    if (all) return true;
+  }
+  return false;
+}
+
+std::vector<std::wstring> ColumnarDecoder::Search(const std::string& raw,
+                                                  size_t limit,
+                                                  int* top_columns) const {
+  std::vector<std::wstring> result;
+  if (top_columns) *top_columns = -1;
+  if (!ready_ || limit == 0) return result;
+
+  const std::string keys = NormalizeKeys(raw);
+  if (keys.size() < 2) return result;
+
+  const std::vector<Split> splits = SplitKeys(keys);
+  if (splits.empty()) return result;
 
   // 2) 尾巴按列分派，逐位查表，定向搜索。
   //
@@ -466,39 +537,10 @@ std::vector<std::wstring> ColumnarDecoder::Search(const std::string& raw,
     }
   };
   std::unordered_map<std::u32string, Ranked> best;
+  std::vector<Cell> cells;
   for (const Split& split : splits) {
-    const int columns = columns_filled(split);
-    const size_t n = split.syllables.size();
-    std::vector<Cell> cells(n);
-    bool usable = true;
-    for (size_t i = 0; i < n && usable; ++i) {
-      cells[i].syllable = split.syllables[i];
-      if (i < split.tail.size()) {
-        const char key = split.tail[i];
-        if (!IsStructureKey(key)) {
-          usable = false;
-          break;
-        }
-        cells[i].structure = key;
-      }
-      for (size_t level = 0; level < kMaxComponents; ++level) {
-        const size_t at = (level + 1) * n + i;
-        if (at >= split.tail.size()) break;
-        // 没给结构却给了部件是不合法的：三段是左对齐逐位填的。
-        if (!cells[i].structure) {
-          usable = false;
-          break;
-        }
-        if (level == 0) {
-          cells[i].first = split.tail[at];
-        } else if (level == 1) {
-          cells[i].second = split.tail[at];
-        } else {
-          cells[i].third = split.tail[at];
-        }
-      }
-    }
-    if (!usable) continue;
+    const int columns = ColumnsFilled(split);
+    if (!AssignColumns(split, &cells)) continue;
 
     // 纯拼那一档 Rime 自己的连打成句管着，这里只是兜底，窄一点就够；
     // 带形码的串每位只剩一两个字，宽窄都无所谓。
@@ -567,6 +609,7 @@ std::vector<std::wstring> ColumnarDecoder::Search(const std::string& raw,
               }
               return a.first < b.first;  // 平分时定序，免得两次调用顺序不同
             });
+  if (top_columns && !ranked.empty()) *top_columns = ranked.front().second.columns;
   for (const auto& one : ranked) {
     if (result.size() >= limit) break;
     result.push_back(CodePointsToWide(one.first));
@@ -722,8 +765,10 @@ std::vector<std::wstring> ColumnarDecoder::SearchLongestPrefix(
 
 std::vector<std::wstring> ColumnarDecoder::Decode(const std::string& raw,
                                                   size_t limit,
-                                                  std::string* fallback_tail) {
+                                                  std::string* fallback_tail,
+                                                  int* columns) {
   if (fallback_tail) fallback_tail->clear();
+  if (columns) *columns = -1;
   MaybeReloadUserTable();
 
   std::vector<std::wstring> result;
@@ -733,7 +778,7 @@ std::vector<std::wstring> ColumnarDecoder::Decode(const std::string& raw,
   // 造候选：数据升级（或用户手改过这张表）之后，一条早就解不出任何字的旧
   // 记录会把这串码伪装成「仍然有效」，于是兜底那段不跑、多出来的那几位按键
   // 也不会交回 Rime —— 用户真按过的键就凭空消失了。
-  std::vector<std::wstring> exact = Search(raw, limit);
+  std::vector<std::wstring> exact = Search(raw, limit, columns);
   if (exact.empty()) {
     // 这串码整体是死码。退到最长有效前缀，并报出没用上的尾巴。
     return SearchLongestPrefix(raw, limit, fallback_tail);

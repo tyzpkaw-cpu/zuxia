@@ -30,6 +30,7 @@ suyao    sz           cw          -> 苏瑶
 4. **`src/RimeEngine.cpp` 的 `FillDecodedCandidates` 与 `ProcessKey`** — 解码器怎么与 Rime 共用一页候选。这里的下标算错就会「按 3 选到第 4 个」
 5. **`src/KeyEventSink.cpp`** — TSF 按键路径。另一个风险集中的文件
 6. **`data-tools/generate_zuxia.py`** — 码表是怎么从汉字数据长出来的
+7. **`data/lua/zuxia_lunar.lua`、`zuxia_datetime.lua`** — `nl` 农历与 `dt` 日期时间（0.4.2），由 rime.dll 自带的 librime-lua 执行；`data-tools/test_lua.py` 逐日核对
 
 ## 验过什么，没验过什么
 
@@ -37,20 +38,27 @@ suyao    sz           cw          -> 苏瑶
 
 | 层 | 自动化覆盖 | 在哪跑 |
 |---|---|---|
-| 解码算法（C++） | 37 条断言 | Linux + CI |
+| 解码算法（C++） | 53 条断言 | Linux + CI |
 | 解码算法（Python 参考） | 15 条断言 | CI |
 | 码表不变量、版本一致性 | `data-tools/audit_zuxia.py`，27 条（`--regen` 再加 4 条） | CI |
-| 引擎行为（真 librime、真词表） | `tools/engine-test.cpp`，51 条断言 | CI，真 Windows |
+| 日期与农历（Lua） | `data-tools/test_lua.py`：农历 1900-01-31—2100-12-31 逐日对照 sxtwl，共 73,384 天；日期时间四个时区；按 librime-lua 的调法跑两个翻译器 | CI（Linux，lupa） |
+| 引擎行为（真 librime、真词表） | `tools/engine-test.cpp`，85 条断言 | CI，真 Windows |
 | 出货载荷（自证提交、清单逐条重算、数据逐字节比对、DLL 诊断串） | `scripts/audit-payload.ps1`，8 组硬断言 | CI，真 Windows |
 | **TSF 那一层** | **零** | **只能真机手动** |
 
-也就是说：`src/KeyEventSink.cpp`、`src/KeyHandler.cpp`、`src/TextService.cpp`、`src/InputMode.cpp`、`src/CandidateWindow.cpp` 这几个文件里的任何改动，**都没有任何自动化测试碰得到**。这一个月里最难查的几个缺陷全出在这一层。你在这几个文件里看出来的任何问题，价值都高于别处。
+也就是说：`src/KeyEventSink.cpp`、`src/KeyHandler.cpp`、`src/TextService.cpp`、`src/InputMode.cpp`、`src/CandidateWindow.cpp`、`src/PartsWindow.cpp` 这几个文件里的任何改动，**都没有任何自动化测试碰得到**。这一个月里最难查的几个缺陷全出在这一层。你在这几个文件里看出来的任何问题，价值都高于别处。
 
 **0.3.0 的三个修复全部落在这一层**，只过了 CI 的 MSVC 编译，一条真机验证都没有：
 
 - `src/KeyEventSink.cpp` — Caps Lock 亮着且没在组字时让字母直通应用（日志标记 `caps-lock-passthrough`）
 - `src/RimeEngine.cpp` — 组字途中按回车改成放弃这次组字、什么都不落（原来会把原始码串当英文落进文档）
 - `src/CandidateWindow.cpp` — `min_width` 下限 220→120，并且同一次组字里只长不缩
+
+**0.4.2 落在这一层的改动同样只过了 CI**（MSVC 编译；引擎那一半有断言，窗口那一半没有）：
+
+- `src/PartsWindow.cpp` 整份重写：不抢焦点的顶层窗口、自绘标题条、整窗拖动、拖边角等比缩放、位置与缩放存 `HKCU\Software\Zuxia\PartsWindow`、每 400 ms 查一次前台进程
+- `src/TextService.cpp`、`KeyEventSink.cpp`、`ThreadMgrEventSink.cpp`、`InputMode.cpp`：拆字窗的显隐时机——落字后保留，失焦、切西文、换前台程序时隐藏
+- `src/RimeEngine.cpp`：解码器带头（`Decoder::Fits` 判 Rime 首选合不合列）与按位置选字（`slots_`）。这一半 `engine-test` 有断言，但没有真机
 
 还有两件：
 
@@ -108,25 +116,26 @@ suyao    sz           cw          -> 苏瑶
 
 按我们自己的优先级排：
 
-1. **反查** — 想不起某个字的结构位时没有出路。Rime 有 `reverse_lookup` 现成机制，没接
-2. **部件别名** — 出＝山山，而现在的码只认 `c`=屮、`q`=凵，常见拆法对不上
-3. **解码器没有回归门禁** — `data-tools/measure_zuxia.py` 能算首选命中率这类数字，但它不在 CI 里，改算法不会有人拦
-4. **TSF 层零自动化覆盖**（见上）
-5. **没有一键诊断脚本** — 用户出问题时没法自己收集信息
-6. **运行时不校验数据文件** — 打包时会逐条重算 `MANIFEST.sha256`，但装完之后没人再核对
-7. **解码器里有拍出来的魔数** — `kBeam=400`、`kBigramWeight=1.0`、`kMaxSegmentations=64`，没有可复现的调参脚本。已知后果：`kMaxSegmentations` 的截断发生在可用性过滤之前，极端重复纯拼串（如 `xian` 连打九次）会让候选从 9 条变成 0 条
-8. **与「应物」码位有 207 字分歧** — 占输入频率 13.69%。结构码已改按 GF 0013—2009 判定，应物那边还没跟；`data-tools/sources/structure-overrides.tsv` 一直是空的
-9. **调频未实现** — 方案已定（判据是「码打满没有」，未打满才调频），没写
-10. **无代码签名；ARM64 无构建**
-11. **界面与引擎两套取值范围** — 设置界面允许的参数范围与引擎实际接受的范围不是同一份定义
-12. **日志里还有宿主进程名与 PID** — 路径已折成 `%LOCALAPPDATA%` 这类环境变量名，进程名和 PID 保留（要靠它们定位是哪个应用出问题）。输入内容一个字都不记
+1. **部件别名** — 出＝山山，而现在的码只认 `c`=屮、`q`=凵，常见拆法对不上
+2. **解码器没有回归门禁** — `data-tools/measure_zuxia.py` 能算首选命中率这类数字，但它不在 CI 里，改算法不会有人拦
+3. **TSF 层零自动化覆盖**（见上）
+4. **没有一键诊断脚本** — 用户出问题时没法自己收集信息
+5. **运行时不校验数据文件** — 打包时会逐条重算 `MANIFEST.sha256`，但装完之后没人再核对
+6. **解码器里有拍出来的魔数** — `kBeam=400`、`kBigramWeight=1.0`、`kMaxSegmentations=64`，没有可复现的调参脚本。已知后果：`kMaxSegmentations` 的截断发生在可用性过滤之前，极端重复纯拼串（如 `xian` 连打九次）会让候选从 9 条变成 0 条
+7. **与「应物」码位有 207 字分歧** — 占输入频率 13.69%。结构码已改按 GF 0013—2009 判定，应物那边还没跟；`data-tools/sources/structure-overrides.tsv` 一直是空的
+8. **调频未实现** — 方案已定（判据是「码打满没有」，未打满才调频），没写
+9. **无代码签名；ARM64 无构建**
+10. **界面与引擎两套取值范围** — 设置界面允许的参数范围与引擎实际接受的范围不是同一份定义
+11. **日志里还有宿主进程名与 PID** — 路径已折成 `%LOCALAPPDATA%` 这类环境变量名，进程名和 PID 保留（要靠它们定位是哪个应用出问题）。输入内容一个字都不记
 
 ## 已经定下来的设计取舍
 
 这几条不是没想过，是想过之后决定这么做的。要推翻请带论据，但别当成疏漏报上来：
 
 - **不做通用纠偏／模糊音。** 容错应该做在规则层（`speller/algebra`），不在算法层。理由是可解释性：列式码的每一位都对应汉字的一个可见事实（读音、结构、部件），打错了用户能自己看出错在哪一位；算法层纠偏会把这条性质抹掉，出错时只能猜。
-  这条**不**建立在「码打满就唯一」之上——那个说法是错的。实测满码唯一率只有 85.03%，有 26.95% 的字（占输入频率 26.03%）打满仍需选字。数字用 `python3 data-tools/measure_zuxia.py data/zuxia.dict.yaml` 复现
+  这条**不**建立在「码打满就唯一」之上——那个说法是错的。实测满码唯一率只有 85.00%，有 26.92% 的字（占输入频率 26.10%）打满仍需选字。数字用 `python3 data-tools/measure_zuxia.py data/zuxia.dict.yaml` 复现
+- **不做反查。** 作者定的。学习模式的拆字窗已经覆盖这个需要：打全拼、把高亮移到那个字上，拆字窗就写出它的结构码和每个部件的字母。Rime 的 `reverse_lookup` 不接
+- **独体字可以整字作部件（0.4.2）。** 这是放宽，不是改码：独体字多认一个「结构码 `d`＋自己读音首字母」的码（月 `yuedy`，于是 揽月 `lanyuezdly`），原有的码一条不少。代价与收益写在方案文档 §5.6：一级部件码首选 88.08%→87.91%。作者可以否决，否决就关掉 `generate_zuxia.takes_itself_as_part` 和 `generate_phrases.write_decoder_data` 里对应的两行
 - **解码器不做按次数的调频，只做回流。** 选一次就生效，只按「最近用过」排序，最多前置 3 条。错选一次的代价是下次选对，一步翻回来；按次数排的话得再选好多次才追得上
 - **结构码以国标为准。** 判定依据是 GF 0013—2009《现代常用独体字规范》（扫描件逐字抄录，存在 `data-tools/sources/gf0013-duti.txt`，256 字）。以前那份硬编码 46 字的独体字表判错了 214 个国标独体字，占全部输入频率的 18.94%
 - **诊断日志只记事件，绝不记内容。** 用户打了什么、选了什么，一个字都不进 `zuxia.log`。加任何新的写入点之前请先读 `src/Diagnostics.h` 顶上那段约定
@@ -144,7 +153,8 @@ python3 data-tools/audit_zuxia.py               # 码表与源码的不变量，
 python3 data-tools/decode_zuxia.py --selftest   # 解码算法参考实现，15 条
 g++ -std=c++17 -O2 -o /tmp/dsel \
   tools/linux-selftest/decoder-selftest.cpp src/Decoder.cpp \
-  -I tools/linux-selftest -I src && /tmp/dsel   # C++ 解码器，37 条
+  -I tools/linux-selftest -I src && /tmp/dsel   # C++ 解码器，53 条
+pip install lupa==2.8 sxtwl==2.0.7 && python3 data-tools/test_lua.py   # dt／nl 两个 Lua 脚本
 python3 data-tools/measure_zuxia.py data/zuxia.dict.yaml  # 码表的命中率与击键数
 ```
 

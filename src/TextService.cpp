@@ -145,28 +145,35 @@ STDMETHODIMP CTextService::Deactivate() ZUXIA_COM_GUARD_BEGIN
   return S_OK;
 ZUXIA_COM_GUARD_END(L"CTextService::Deactivate", S_OK)
 
-void CTextService::_UpdatePartsWindow(const std::wstring& highlighted_text) {
+void CTextService::_UpdatePartsWindow(const std::wstring& text) {
   if (!parts_window_) return;
   if (!zuxia::CurrentAppearance().show_parts_window) {
     parts_window_->Hide();
     return;
   }
-  if (highlighted_text.empty()) {
-    parts_window_->Hide();
-    return;
-  }
-  parts_window_->ShowWord(highlighted_text);
+  // 空串不再意味着「隐藏」：拆字窗留着上一个词，由它自己决定什么时候收。
+  if (!text.empty()) parts_window_->ShowWord(text);
+}
+
+void CTextService::_HidePartsWindow() {
+  if (parts_window_) parts_window_->Hide();
 }
 
 void CTextService::_HideCandidateWindow() {
   if (candidate_window_) candidate_window_->Hide();
-  _UpdatePartsWindow(L"");
+  // 拆字窗不跟着候选窗收起：上屏之后它留着刚上屏的那个词，可以拖开、放大
+  // 了慢慢看（0.4.1 之前一拖就没，就是因为这里连带把它藏了）。这里只结束
+  // 「这一次组字」—— 用户在这次组字里点过 × 的，下一次组字它照常出来。
+  parts_session_open_ = false;
 }
 
 HRESULT CTextService::_ApplyRimeSnapshot(
     TfEditCookie cookie, ITfContext* context,
     const zuxia::EngineSnapshot& snapshot) {
   if (!snapshot.commit.empty()) {
+    // 拆字窗换成刚上屏的词。必须在下面 _HideCandidateWindow 之前：用户这次
+    // 组字里关掉过它，就不能因为上屏又弹出来。
+    _UpdatePartsWindow(snapshot.commit);
     const HRESULT result = _CommitText(cookie, context, snapshot.commit);
     if (SUCCEEDED(result) && !snapshot.preedit.empty()) {
       const HRESULT kept =
@@ -207,13 +214,16 @@ void CTextService::_UpdateCandidateWindow(
   candidate_window_->Update(snapshot.preedit, snapshot.candidates,
                             snapshot.highlighted);
 
-  // Update parts window with the currently highlighted candidate (realtime).
+  // 新的一次组字开始：上一次里被 × 掉的拆字窗可以再出来了。
+  if (!parts_session_open_) {
+    parts_session_open_ = true;
+    if (parts_window_) parts_window_->ResetDismissed();
+  }
+  // 拆字窗实时跟着高亮的候选走。
   if (!snapshot.candidates.empty()) {
     size_t idx = static_cast<size_t>(snapshot.highlighted);
     if (idx >= snapshot.candidates.size()) idx = 0;
     _UpdatePartsWindow(snapshot.candidates[idx].text);
-  } else {
-    _UpdatePartsWindow(L"");
   }
 
   RECT anchor = {};

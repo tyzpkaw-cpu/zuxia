@@ -425,6 +425,41 @@ int main(int argc, char** argv) {
   // 「码打得满」压过「字多」：选词把结构列填满了，选此只是碰巧也解得通。
   Check("xuancibz", "\xe9\x80\x89\xe8\xaf\x8d", 3, &decoder);       // 选词
 
+  // 整字作部件（0.4.2）：月 是独体字，可以只拿自己的读音首字母 y 当部件。
+  // 真机反馈「揽月打不出来」：按 览(l)、月(y) 打的 lanyuezdly 以前出「烂曰」。
+  const char* kLanyue = "\xe6\x8f\xbd\xe6\x9c\x88";  // 揽月
+  Check("lanyuezd", kLanyue, 3, &decoder);
+  Check("lanyuezdly", kLanyue, 3, &decoder);
+  Check("lanyuezdlj", kLanyue, 3, &decoder);
+  Check("lanyuezdsy", kLanyue, 3, &decoder);
+  Check("lanyuezdlyjy", kLanyue, 1, &decoder);  // 第二列：见 j，月 再写一次 y
+  Check("yuedy", "\xe4\xb9\x90", 3, &decoder);   // 乐/月/曰 都是独体 yue
+
+  std::printf("\nFits / columns (RimeEngine decides who leads):\n");
+  Assert("揽月 fits lanyuezd", decoder.Fits("lanyuezd", Wide(kLanyue)));
+  Assert("揽月 fits lanyuezdly", decoder.Fits("lanyuezdly", Wide(kLanyue)));
+  // 蓝 是上下结构（s），落不到 lan+z 这一列上 —— Rime 连打成句给的就是它。
+  Assert("蓝刖 does not fit lanyuezd",
+         !decoder.Fits("lanyuezd", Wide("\xe8\x93\x9d\xe5\x88\x96")));
+  Assert("我想问 fits bare pinyin woxiangwen",
+         decoder.Fits("woxiangwen", Wide("\xe6\x88\x91\xe6\x83\xb3\xe9\x97\xae")));
+  Assert("a one-char word does not fit a two-syllable code",
+         !decoder.Fits("lanyuezd", Wide("\xe6\x8f\xbd")));
+  Assert("nothing fits a code with a digit in it",
+         !decoder.Fits("lanyuezd9", Wide(kLanyue)));
+  {
+    std::string tail;
+    int columns = -9;
+    decoder.Decode("lanyuezd", 9, &tail, &columns);
+    Assert("lanyuezd fills one column", columns == 1 && tail.empty());
+    decoder.Decode("lanyuezdly", 9, &tail, &columns);
+    Assert("lanyuezdly fills two columns", columns == 2 && tail.empty());
+    decoder.Decode("woxiangwen", 9, &tail, &columns);
+    Assert("woxiangwen is bare pinyin (zero columns)", columns == 0);
+    decoder.Decode("zuxiasdkq", 9, &tail, &columns);
+    Assert("a fallback reports no columns", columns == -1 && tail == "q");
+  }
+
   std::printf("\nfallback to the longest valid prefix:\n");
   // 尾巴 h 没用上，交出去让输入法接着组字。
   CheckFallback("zuxiasdkq", "\xe8\xb6\xb3\xe4\xb8\x8b", "q", &decoder);

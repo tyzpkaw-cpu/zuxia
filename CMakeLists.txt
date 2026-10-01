@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ZuxiaIME VERSION 0.4.1 LANGUAGES CXX RC)
+project(ZuxiaIME VERSION 0.4.2 LANGUAGES CXX RC)
 
 if(NOT WIN32 OR NOT MSVC)
   message(FATAL_ERROR "ZuxiaNative currently requires Windows and MSVC.")
@@ -112,8 +112,10 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/zuxia.decoder.tsv")
   message(FATAL_ERROR
           "缺 data/zuxia.decoder.tsv，先跑：python data-tools/generate_phrases.py")
 endif()
+# data/lua/ 下是 dt（日期时间）、nl（农历）两个触发码的脚本，librime-lua
+# 从 <共享数据目录>\lua\ 加载它们，所以子目录原样装过去。
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/" DESTINATION data
-        FILES_MATCHING PATTERN "*.yaml" PATTERN "*.tsv")
+        FILES_MATCHING PATTERN "*.yaml" PATTERN "*.tsv" PATTERN "*.lua")
 install(FILES README.md LICENSE-CODE.txt THIRD_PARTY_NOTICES.md
         DESTINATION docs)
 # Nothing else from docs/ ships. Two reasons: the maintainer's notes there

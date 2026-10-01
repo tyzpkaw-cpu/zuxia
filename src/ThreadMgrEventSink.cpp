@@ -64,6 +64,10 @@ ZUXIA_COM_GUARD_BEGIN
             _HideCandidateWindow();
         }
     }
+    // 焦点离开了所有文档（切到别的程序、点到不能打字的地方）：拆字窗也收起。
+    // 只是换到同一程序里的另一个输入框时它留着。
+    if (pDocMgrFocus == NULL)
+        _HidePartsWindow();
     //
     // Whenever focus is changed, we initialize the TextEditSink.
     //
