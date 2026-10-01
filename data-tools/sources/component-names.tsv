@@ -77,7 +77,7 @@ component	name	letter	status	chars	readings	examples
 革	革	g	proposed	37	ge	鞥鞍霸靶靽
 白	白	b	proposed	37	bai	皑百柏伯卑
 厂	厂	c	proposed	37	chang	岸广厕产辰
-彳	彳	c	proposed	37	chi	彼徜彻徂待
+彳	人旁	r	settled	37	chi	彼徜役徂待
 牛	牛	n	proposed	36	niu	牠半犇犨犊
 舟	舟	z	proposed	35	zhou	般舭舶舱艚
 雨	雨	y	settled	34	yu	霂雫霭霸雹
@@ -763,7 +763,7 @@ component	name	letter	status	chars	readings	examples
 岁	岁	s	proposed	4	sui	刿秽翙哕
 右	右	y	proposed	4	you	醢若佑祐
 旱	旱	h	proposed	4	han	悍捍焊垾
-亍	亍	c	proposed	4	chu	行衎衒衠
+亍	亍旁	c	settled	4	chu	行衎衒衠
 景	景	j	proposed	4	jing	颢憬璟影
 龠	龠	y	proposed	4	yue	龢瀹爚籥
 忽	忽	h	proposed	4	hu	惚唿淴锪
@@ -1406,7 +1406,7 @@ component	name	letter	status	chars	readings	examples
 𢼄			needed	1		棨
 替	替	t	proposed	1	ti	潜
 肩	肩	j	proposed	1	jian	掮
-衍	衍	y	proposed	1	yan	愆
+衍		 	needed	1	yan	愆
 倩	倩	q	proposed	1	qian	蒨
 乾	乾	g	proposed	1	gan	墘
 羌	羌	q	proposed	1	qiang	蜣

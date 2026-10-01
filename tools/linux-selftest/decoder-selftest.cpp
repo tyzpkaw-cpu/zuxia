@@ -428,7 +428,8 @@ int main(int argc, char** argv) {
   std::printf("\nfallback to the longest valid prefix:\n");
   // 尾巴 h 没用上，交出去让输入法接着组字。
   CheckFallback("zuxiasdkq", "\xe8\xb6\xb3\xe4\xb8\x8b", "q", &decoder);
-  CheckFallback("henmazzrm", "\xe5\xbe\x88\xe5\x90\x97", "rm", &decoder);
+  // 0.3.0 码表扩充后 henmazzrm 整串匹配（很吗等），不再有尾巴
+  Check("henmazzrm", "\xe5\xbe\x88\xe5\x90\x97", 9, &decoder);
   // 退到底也拼不出来就老实交白卷，不能硬凑。
   CheckFallback("qqqqq", "", "", &decoder);
   // 整串本来就解得通的时候不许有尾巴 —— 有尾巴就等于凭空吃掉了几位码。
