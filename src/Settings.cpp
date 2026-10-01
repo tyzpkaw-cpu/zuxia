@@ -75,17 +75,11 @@ bool ReadUtf8(const std::wstring& path, std::wstring* out) {
       static_cast<unsigned char>(bytes[2]) == 0xBF) {
     bytes.erase(0, 3);
   }
-  if (bytes.empty()) {
-    out->clear();
-    return false;
-  }
+  if (bytes.empty()) { out->clear(); return false; }
   const int needed = MultiByteToWideChar(CP_UTF8, 0, bytes.c_str(),
                                          static_cast<int>(bytes.size()),
                                          nullptr, 0);
-  if (needed <= 0) {
-    out->clear();
-    return false;
-  }
+  if (needed <= 0) { out->clear(); return false; }
   out->assign(static_cast<size_t>(needed), L'\0');
   MultiByteToWideChar(CP_UTF8, 0, bytes.c_str(),
                       static_cast<int>(bytes.size()), out->data(), needed);
@@ -109,8 +103,7 @@ bool WriteAll(HANDLE file, const void* data, size_t size) {
 bool WriteBody(HANDLE file, const std::string& bytes) {
   const char bom[3] = {'\xEF', '\xBB', '\xBF'};
   if (!WriteAll(file, bom, 3)) return false;
-  if (!bytes.empty() && !WriteAll(file, bytes.data(), bytes.size()))
-    return false;
+  if (!bytes.empty() && !WriteAll(file, bytes.data(), bytes.size())) return false;
   return FlushFileBuffers(file) != FALSE;
 }
 
@@ -125,7 +118,6 @@ bool WriteUtf8(const std::wstring& path, const std::wstring& text,
     WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
                         bytes.data(), needed, nullptr, nullptr);
   }
-
   if (!overwrite) {
     HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
                               CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -135,17 +127,13 @@ bool WriteUtf8(const std::wstring& path, const std::wstring& text,
     if (!ok) DeleteFileW(path.c_str());
     return ok;
   }
-
   const std::wstring temp = path + L".new";
   HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr,
                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) return false;
   const bool ok = WriteBody(file, bytes);
   CloseHandle(file);
-  if (!ok) {
-    DeleteFileW(temp.c_str());
-    return false;
-  }
+  if (!ok) { DeleteFileW(temp.c_str()); return false; }
   if (!MoveFileExW(temp.c_str(), path.c_str(),
                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
     DeleteFileW(temp.c_str());
@@ -177,15 +165,13 @@ std::wstring Serialize(const Appearance& look) {
   out += L"#\r\n";
   out += L"# \u6539\u5b8c\u4fdd\u5b58\u5373\u53ef\uff0c\u6700\u6162\u534a\u79d2\u751f\u6548\uff0c\u4e0d\u7528\u91cd\u542f\u8f93\u5165\u6cd5\u3002\r\n";
   out += L"# \u4e5f\u53ef\u4ee5\u7528\u5f00\u59cb\u83dc\u5355\u91cc\u7684\u300c\u8db3\u4e0b\u8f93\u5165\u6cd5\u8bbe\u7f6e\u300d\u6539\uff0c\u90a3\u8fb9\u662f\u56fe\u5f62\u754c\u9762\u3002\r\n";
-  out += L"# \u4e95\u53f7\u5f00\u5934\u7684\u662f\u8bf4\u660e\uff0c\u5220\u4e0d\u5220\u90fd\u884c\u3002\u5199\u574f\u4e86\u4e0d\u8981\u7d27\uff1a\u8ba4\u4e0d\u51fa\u6765\u7684\u884c\u4f1a\u88ab\u8df3\u8fc7\uff0c\r\n";
-  out += L"# \u6574\u4e2a\u6587\u4ef6\u5220\u6389\u5219\u6062\u590d\u9ed8\u8ba4\uff0c\u4e0b\u6b21\u6253\u5b57\u4f1a\u91cd\u65b0\u751f\u6210\u4e00\u4efd\u3002\r\n";
+  out += L"# \u4e95\u53f7\u5f00\u5934\u7684\u662f\u8bf4\u660e\uff0c\u5220\u4e0d\u5220\u90fd\u884c\u3002\u5199\u574f\u4e86\u4e0d\u8981\u7d27\uff1a\u8ba4\u4e0d\u51fa\u6765\u7684\u884c\u4f1a\u88ab\u8df3\u8fc7\u3002\r\n";
   out += L"#\r\n";
-  out += L"# \u989c\u8272\u5199 #RRGGBB\uff08\u7f51\u9875\u90a3\u79cd\u5341\u516d\u8fdb\u5236\uff09\uff0c\u6216\u8005\u5199\u300c\u8ddf\u968f\u7cfb\u7edf\u300d\u3002\r\n";
+  out += L"# \u989c\u8272\u5199 #RRGGBB\uff0c\u6216\u8005\u5199\u300c\u8ddf\u968f\u7cfb\u7edf\u300d\u3002\r\n";
   out += L"\r\n";
   out += L"\u5b57\u4f53 = " + look.font + L"\r\n";
   out += L"\u5b57\u53f7 = " + Num(look.font_size) + L"\r\n";
   out += L"\r\n";
-  out += L"# \u7ad6\u6392 = \u5019\u9009\u4e00\u884c\u4e00\u4e2a\uff1b\u6a2a\u6392 = \u5019\u9009\u6392\u6210\u4e00\u884c\r\n";
   out += L"\u5019\u9009\u6392\u5217 = " + std::wstring(look.horizontal ? L"\u6a2a\u6392" : L"\u7ad6\u6392") + L"\r\n";
   out += L"\r\n";
   out += L"\u884c\u9ad8 = " + Num(look.row_height) + L"\r\n";
@@ -199,15 +185,15 @@ std::wstring Serialize(const Appearance& look) {
   out += L"\u9009\u4e2d\u5e95\u8272 = " + Hex(look.highlight_bg) + L"\r\n";
   out += L"\u9009\u4e2d\u6587\u5b57 = " + Hex(look.highlight_fg) + L"\r\n";
   out += L"\r\n";
-  out += L"# \u4efb\u52a1\u680f\u53f3\u4e0b\u89d2\u90a3\u4e2a\u8f93\u5165\u6307\u793a\u5668\u4e0a\u663e\u793a\u7684\u5b57\uff0c\u4e00\u4e2a\u5b57\u6700\u597d\u770b\u3002\r\n";
   out += L"\u4efb\u52a1\u680f\u56fe\u6807 = " + look.tray_chinese + L"\r\n";
   out += L"\u897f\u6587\u56fe\u6807 = " + look.tray_western + L"\r\n";
   out += L"\r\n";
   out += L"# \u62c6\u5b57\u7a97\u53e3 = \u5f00\u542f\u5b66\u4e60\u6a21\u5f0f\uff08\u5019\u9009\u9ad8\u4eae\u65f6\u5b9e\u65f6\u663e\u793a\u62c6\u5b57\uff09\r\n";
   out += L"\u62c6\u5b57\u7a97\u53e3 = " + std::wstring(look.show_parts_window ? L"\u5f00\u542f" : L"\u5173\u95ed") + L"\r\n";
+  out += L"# \u62c6\u5b57\u65b9\u5411 = \u7ad6\u6392\uff08\u6bcf\u5b57\u4e00\u884c\uff0c\u4fe1\u606f\u5c55\u5f00\u5168\uff09/ \u6a2a\u6392\uff08\u591a\u5b57\u5e76\u6392\uff09\r\n";
+  out += L"\u62c6\u5b57\u65b9\u5411 = " + std::wstring(look.parts_vertical ? L"\u7ad6\u6392" : L"\u6a2a\u6392") + L"\r\n";
   out += L"\r\n";
-  out += L"# \u5019\u9009\u4e2a\u6570\u3001\u4e2d\u82f1\u5207\u6362\u952e\u8fd9\u4e9b\u4e0d\u5728\u8fd9\u91cc \u2014\u2014 \u5b83\u4eec\u5c5e\u4e8e librime \u7684\u884c\u4e3a\uff0c\r\n";
-  out += L"# \u5728\u5b89\u88c5\u76ee\u5f55\u7684 data\\\\default.yaml \u4e0e data\\\\zuxia.schema.yaml \u91cc\u3002\r\n";
+  out += L"# \u5019\u9009\u4e2a\u6570\u3001\u4e2d\u82f1\u5207\u6362\u952e\u5728 data\\\\zuxia.schema.yaml \u91cc\u3002\r\n";
   return out;
 }
 
@@ -219,9 +205,8 @@ bool ParseColor(const std::wstring& value, COLORREF* out, bool* system) {
     return true;
   }
   std::wstring digits;
-  for (wchar_t c : value) {
+  for (wchar_t c : value)
     if (iswxdigit(c)) digits.push_back(c);
-  }
   if (digits.size() != 6) return false;
   const unsigned long packed = wcstoul(digits.c_str(), nullptr, 16);
   *system = false;
@@ -291,7 +276,12 @@ void ApplyLine(const std::wstring& raw, Appearance* out) {
     if (!value.empty()) out->tray_western = value.substr(0, 2);
   } else if (key == L"\u62c6\u5b57\u7a97\u53e3" || k == L"parts_window" || k == L"show_parts_window") {
     const std::wstring lv = Lower(value);
-    out->show_parts_window = Contains(lv, L"\u5f00") || lv == L"on" || lv == L"true" || lv == L"1" || lv == L"yes";
+    out->show_parts_window =
+        Contains(lv, L"\u5f00") || lv == L"on" || lv == L"true" || lv == L"1" || lv == L"yes";
+  } else if (key == L"\u62c6\u5b57\u65b9\u5411" || k == L"parts_direction" || k == L"parts_layout") {
+    const std::wstring lv = Lower(value);
+    // \u7ad6\u6392 = vertical (default); \u6a2a\u6392 = horizontal
+    out->parts_vertical = !Contains(lv, L"\u6a2a") && lv != L"horizontal" && lv != L"horiz";
   }
   if (out->max_width < out->min_width) out->max_width = out->min_width;
 }
@@ -351,9 +341,8 @@ Appearance CurrentAppearance() {
       return g_appearance;
     }
   }
-  if (g_loaded && CompareFileTime(&info.ftLastWriteTime, &g_stamp) == 0) {
+  if (g_loaded && CompareFileTime(&info.ftLastWriteTime, &g_stamp) == 0)
     return g_appearance;
-  }
   g_stamp = info.ftLastWriteTime;
 
   std::wstring text;
