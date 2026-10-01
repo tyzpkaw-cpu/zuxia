@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ZuxiaIME VERSION 0.3.0 LANGUAGES CXX RC)
+project(ZuxiaIME VERSION 0.4.0 LANGUAGES CXX RC)
 
 if(NOT WIN32 OR NOT MSVC)
   message(FATAL_ERROR "ZuxiaNative currently requires Windows and MSVC.")
