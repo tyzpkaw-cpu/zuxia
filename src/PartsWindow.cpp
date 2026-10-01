@@ -1,6 +1,6 @@
 // PartsWindow.cpp -- Zuxia IME parts-analysis window (learning mode)
 // Vertical layout (default): one row per character, grid left, full info right.
-// Horizontal layout: side-by-side grids (compact, original style).
+// Horizontal layout: side-by-side grids (compact).
 // Non-focus-stealing; draggable; user-resizable; right-click to hide.
 
 #include "Globals.h"
@@ -116,15 +116,29 @@ void CPartsWindow::ShowWord(const std::wstring& text) {
     }
     if (chars.empty()) { Hide(); return; }
 
+    // If the number of characters changed, forget the user-resize so the
+    // window resizes to fit the new content automatically.
+    if (chars.size() != current_chars_.size()) {
+        user_resized_ = false;
+    }
+
     current_chars_ = std::move(chars);
     current_word_  = text;
 
+    // Rebuild fonts in case DPI changed.
     if (font_big_)   { DeleteObject(font_big_);   font_big_   = nullptr; }
     if (font_label_) { DeleteObject(font_label_); font_label_ = nullptr; }
 
-    RecalcSize();
-    SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, width_, height_,
-                 SWP_NOMOVE | SWP_NOACTIVATE);
+    // Resize only when user hasn't manually dragged the window border.
+    if (!user_resized_) {
+        RecalcSize();
+        SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, width_, height_,
+                     SWP_NOMOVE | SWP_NOACTIVATE);
+    } else {
+        // Still keep TOPMOST and no-activate, but don't change size.
+        SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
     InvalidateRect(hwnd_, nullptr, TRUE);
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 }
@@ -133,6 +147,8 @@ void CPartsWindow::Hide() {
     if (hwnd_) ShowWindow(hwnd_, SW_HIDE);
     current_chars_.clear();
     current_word_.clear();
+    // Don't reset user_resized_ here -- user dragged it to a preferred size,
+    // keep that across hide/show cycles of the same word length.
 }
 
 bool CPartsWindow::Visible() const {
@@ -176,48 +192,32 @@ void CPartsWindow::EnsureLoaded() {
 }
 
 // -- size ------------------------------------------------------------------
-// Row height in vertical mode: grid(90) capped to row, info lines stack below.
-// Each character block height = max(cellH, structure_line + N*part_line).
 void CPartsWindow::RecalcSize() {
     if (current_chars_.empty()) {
         width_  = Scale(320);
         height_ = Scale(200);
         return;
     }
-    // Keep user-resized size if window is already visible.
-    if (hwnd_ && IsWindowVisible(hwnd_)) {
-        RECT r = {};
-        GetClientRect(hwnd_, &r);
-        if (r.right > 0 && r.bottom > 0) return;
-    }
-
     const bool vert  = CurrentAppearance().parts_vertical;
     const int  pad   = Scale(8);
     const int  cellW = Scale(90);
     const int  cellH = Scale(90);
-    const int  rowH  = Scale(22);   // per info line
+    const int  rowH  = Scale(22);
     const int  n     = static_cast<int>(current_chars_.size());
 
     if (vert) {
-        // Vertical: each character = one row.
-        // Row height = max(cellH, structure_line + parts*rowH) + pad.
-        // Width = cellW + info_width + 2*pad.
         int total_h = pad;
         for (const auto& cp : current_chars_) {
             const int info_h = rowH + static_cast<int>(cp.parts.size()) * rowH;
-            const int row_h  = std::max(cellH, info_h) + pad;
-            total_h += row_h;
+            total_h += std::max(cellH, info_h) + pad;
         }
-        // Info area: glyph(2ch) + name(~4ch) + pinyin(~4ch) + arrow + keys(2ch)
-        // ~24 chars at ~10px each = 240px; add cellW + 2*pad.
         width_  = cellW + Scale(260) + 2 * pad;
         height_ = total_h;
     } else {
-        // Horizontal: N columns side by side.
         int max_parts = 0;
         for (const auto& cp : current_chars_)
             max_parts = std::max(max_parts, static_cast<int>(cp.parts.size()));
-        const int col_w  = cellW + Scale(150);
+        const int col_w = cellW + Scale(150);
         width_  = n * col_w + (n + 1) * pad;
         height_ = pad + cellH + rowH + max_parts * Scale(28) + pad;
     }
@@ -248,8 +248,6 @@ void CPartsWindow::Paint(HDC dc, const RECT& client) {
     const int  n    = static_cast<int>(current_chars_.size());
 
     if (vert) {
-        // ---- Vertical layout ----
-        // Each row: [grid] | [info block]
         const int cellW = Scale(90);
         const int cellH = Scale(90);
         const int rowH  = Scale(22);
@@ -258,16 +256,14 @@ void CPartsWindow::Paint(HDC dc, const RECT& client) {
         int y = pad;
         for (int i = 0; i < n; ++i) {
             const CharParts& cp = current_chars_[i];
-            const int info_lines = 1 + static_cast<int>(cp.parts.size()); // structure + parts
+            const int info_lines = 1 + static_cast<int>(cp.parts.size());
             const int info_h     = info_lines * rowH;
             const int row_h      = std::max(cellH, info_h);
 
-            // Grid: vertically centred in the row
             const int grid_y = y + (row_h - cellH) / 2;
             RECT cell_rc = { pad, grid_y, pad + cellW, grid_y + cellH };
             DrawMiziGrid(dc, cell_rc);
 
-            // Big character
             EnsureFonts();
             HFONT old = font_big_
                 ? reinterpret_cast<HFONT>(SelectObject(dc, font_big_)) : nullptr;
@@ -277,14 +273,12 @@ void CPartsWindow::Paint(HDC dc, const RECT& client) {
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             if (old) SelectObject(dc, old);
 
-            // Info block: structure line, then one line per part
             old = font_label_
                 ? reinterpret_cast<HFONT>(SelectObject(dc, font_label_)) : nullptr;
 
-            const int ix = pad + cellW + pad;  // info x start
-            int iy = y + (row_h - info_h) / 2; // vertically centre info
+            const int ix = pad + cellW + pad;
+            int iy = y + (row_h - info_h) / 2;
 
-            // Structure line (grey)
             {
                 std::wstring s = L"\u7ed3\u6784\uff1a";
                 s += StructureNameFor(cp.structure);
@@ -295,10 +289,8 @@ void CPartsWindow::Paint(HDC dc, const RECT& client) {
                 iy += rowH;
             }
 
-            // Part lines (normal colour)
             SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
             for (const auto& p : cp.parts) {
-                // Build full line: glyph  name  pinyin  ->  KEYS
                 std::wstring first_name = p.names;
                 auto comma = first_name.find(L',');
                 if (comma != std::wstring::npos)
@@ -313,7 +305,6 @@ void CPartsWindow::Paint(HDC dc, const RECT& client) {
                 if (!keys.empty())     line += L"  \u2192  " + keys;
 
                 RECT r = { ix, iy, cw - pad, iy + rowH };
-                // No DT_END_ELLIPSIS: we want full text; window is wide enough.
                 DrawTextW(dc, line.c_str(), -1, &r,
                           DT_LEFT | DT_VCENTER | DT_SINGLELINE);
                 iy += rowH;
@@ -321,7 +312,6 @@ void CPartsWindow::Paint(HDC dc, const RECT& client) {
 
             if (old) SelectObject(dc, old);
 
-            // Separator line between characters
             if (i < n - 1) {
                 const int sep_y = y + row_h + pad / 2;
                 HPEN pen = CreatePen(PS_SOLID, 1, RGB(220, 220, 220));
@@ -333,30 +323,29 @@ void CPartsWindow::Paint(HDC dc, const RECT& client) {
                     DeleteObject(pen);
                 }
             }
-
             y += row_h + pad;
         }
     } else {
-        // ---- Horizontal layout (original) ----
-        const int col_w = (static_cast<int>(client.right) - (n + 1) * pad) / n;
+        const int col_w =
+            (static_cast<int>(client.right) - (n + 1) * pad) / n;
         if (col_w <= 0) return;
         for (int i = 0; i < n; ++i) {
             int cx = pad + i * (col_w + pad);
             RECT col_rc = { cx, pad,
-                            cx + col_w, static_cast<int>(client.bottom) - pad };
+                            cx + col_w,
+                            static_cast<int>(client.bottom) - pad };
             DrawCharGridHoriz(dc, col_rc, current_chars_[i]);
         }
     }
 }
 
-// Horizontal-mode helper: original compact layout.
 void CPartsWindow::DrawCharGridHoriz(HDC dc, const RECT& col_rc,
                                       const CharParts& cp) {
-    const int pad    = Scale(8);
-    const int cellW  = Scale(90);
-    const int cellH  = Scale(90);
-    const int col_w  = static_cast<int>(col_rc.right  - col_rc.left);
-    const int col_h  = static_cast<int>(col_rc.bottom - col_rc.top);
+    const int pad   = Scale(8);
+    const int cellW = Scale(90);
+    const int cellH = Scale(90);
+    const int col_w = static_cast<int>(col_rc.right  - col_rc.left);
+    const int col_h = static_cast<int>(col_rc.bottom - col_rc.top);
     const int gw = std::min(cellW, col_w);
     const int gh = std::min(cellH, col_h);
 
@@ -374,10 +363,8 @@ void CPartsWindow::DrawCharGridHoriz(HDC dc, const RECT& col_rc,
 
     old = font_label_
         ? reinterpret_cast<HFONT>(SelectObject(dc, font_label_)) : nullptr;
-
     const int ix = col_rc.left + gw + pad;
     int y = col_rc.top;
-
     {
         std::wstring s = L"\u7ed3\u6784\uff1a";
         s += StructureNameFor(cp.structure);
@@ -432,7 +419,8 @@ void CPartsWindow::DrawMiziGrid(HDC dc, const RECT& r) {
         SelectObject(dc, pen2);
         MoveToEx(dc, r.left, r.top,  nullptr); LineTo(dc, r.right, r.bottom);
         MoveToEx(dc, r.right, r.top, nullptr); LineTo(dc, r.left,  r.bottom);
-        SelectObject(dc, old ? old : reinterpret_cast<HPEN>(GetStockObject(BLACK_PEN)));
+        SelectObject(dc, old ? old
+            : reinterpret_cast<HPEN>(GetStockObject(BLACK_PEN)));
         DeleteObject(pen2);
     }
     if (old) SelectObject(dc, old);
@@ -447,11 +435,21 @@ LRESULT CALLBACK CPartsWindow::WindowProc(HWND hwnd, UINT msg,
     if (msg == WM_NCCREATE) {
         auto* cs = reinterpret_cast<CREATESTRUCTW*>(l);
         self = static_cast<CPartsWindow*>(cs->lpCreateParams);
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                          reinterpret_cast<LONG_PTR>(self));
     }
     if (msg == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
     if (msg == WM_CLOSE)  { if (self) self->Hide(); return 0; }
-    if (msg == WM_SIZE)   { if (self) InvalidateRect(hwnd, nullptr, TRUE); return 0; }
+    if (msg == WM_SIZE) {
+        if (self) {
+            // Mark as user-resized only when the user drags the border
+            // (wParam == SIZE_RESTORED and window was already visible).
+            if (w == SIZE_RESTORED && IsWindowVisible(hwnd))
+                self->user_resized_ = true;
+            InvalidateRect(hwnd, nullptr, TRUE);
+        }
+        return 0;
+    }
     if (msg == WM_PAINT && self) {
         PAINTSTRUCT ps = {};
         HDC dc = BeginPaint(hwnd, &ps);
