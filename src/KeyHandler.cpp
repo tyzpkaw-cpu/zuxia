@@ -9,8 +9,6 @@
 
 namespace {
 
-// 按键路径上的失败会一次一键地重复。日志容量有限，所以每种失败每个进程
-// 只留头几条 —— 被同一条消息刷满的日志等于没有日志。
 bool WithinLogBudget(LONG* seen, LONG budget) {
   return InterlockedIncrement(seen) <= budget;
 }
@@ -22,8 +20,6 @@ class CKeyHandlerEditSession final : public CEditSessionBase {
   CKeyHandlerEditSession(CTextService* service, ITfContext* context, WPARAM key)
       : CEditSessionBase(service, context), key_(key) {}
 
-  // 引擎是否已经吃下这一键。吃下了就绝不能再把键交还给应用，哪怕后面写
-  // 文档失败 —— 见 _InvokeKeyHandler。
   bool EngineTookKey() const { return engine_took_key_; }
 
   STDMETHODIMP DoEditSession(TfEditCookie cookie) override
@@ -35,10 +31,6 @@ class CKeyHandlerEditSession final : public CEditSessionBase {
     try {
       snapshot = text_service_->_Engine().ProcessKey(rime_key);
     } catch (...) {
-      // 引擎在中途抛了，它内部状态是什么没人知道。让异常穿出去的话外层
-      // guard 只会 return E_FAIL，而 engine_took_key_ 还是 false，调用方
-      // 会把这一键还给应用 —— 字母落进文档，引擎那边却可能留着半截组字。
-      // 清干净再还，两边至少是一致的。
       try {
         text_service_->_Engine().Clear();
         text_service_->_HideCandidateWindow();
@@ -52,7 +44,6 @@ class CKeyHandlerEditSession final : public CEditSessionBase {
     }
     if (!snapshot.handled && snapshot.commit.empty() &&
         snapshot.preedit.empty() && !snapshot.composing) {
-      // Rime 看过之后什么也没发生，它内部状态没动，这一键还给应用是对的。
       return S_FALSE;
     }
     engine_took_key_ = true;
@@ -61,17 +52,9 @@ class CKeyHandlerEditSession final : public CEditSessionBase {
     try {
       applied = text_service_->_ApplyRimeSnapshot(cookie, context_, snapshot);
     } catch (...) {
-      // 异常从这里穿出去的话，外层 guard 直接 return E_FAIL，底下那段收尾
-      // 就整段被跳过：引擎里留着状态、TSF 组字还挂着、候选窗还开着，而
-      // engine_took_key_ 已经是 true，_InvokeKeyHandler 照样报 S_OK。
-      // 从下一键起两边就错位。在这儿接住，走跟写失败一样的那套收尾。
       applied = E_UNEXPECTED;
     }
     if (FAILED(applied)) {
-      // 引擎已经吃下这一键，文档却没写成（组字范围失效、宿主拒绝写入）。
-      // 这时候把键交还给应用，字母会原样落进文档而 Rime 那边还留着它，
-      // 两边从此错位，越打越乱。宁可丢掉这一键：把两边都清干净，键仍然
-      // 算我们吃掉的。这条路径以前完全没有日志。
       static LONG seen = 0;
       if (WithinLogBudget(&seen, 8)) {
         zuxia::LogFailure(L"apply-failed", static_cast<unsigned long>(applied));
@@ -81,7 +64,6 @@ class CKeyHandlerEditSession final : public CEditSessionBase {
         text_service_->_Engine().Clear();
         text_service_->_HideCandidateWindow();
       } catch (...) {
-        // 收尾自己抛了就只能到此为止。清了一半也比一点没清好。
       }
     }
     return applied;
@@ -115,14 +97,10 @@ HRESULT CTextService::_InvokeKeyHandler(ITfContext* context, WPARAM key,
   HRESULT session_result = E_FAIL;
   const HRESULT request_result = context->RequestEditSession(
       _tfClientId, session, TF_ES_SYNC | TF_ES_READWRITE, &session_result);
-  // Release 之后对象可能就没了，标志位得先读出来。TF_ES_SYNC 保证
-  // DoEditSession 已经在 RequestEditSession 里跑完。
   const bool engine_took_key = session->EngineTookKey();
   session->Release();
 
   if (FAILED(request_result)) {
-    // 同步写锁没拿到，DoEditSession 根本没跑，引擎也就没碰过这一键 ——
-    // 交还给应用是安全的。以前这条路一声不吭，现在留个记号。
     static LONG refused = 0;
     if (WithinLogBudget(&refused, 8)) {
       zuxia::LogFailure(L"edit-session-refused",
@@ -130,8 +108,6 @@ HRESULT CTextService::_InvokeKeyHandler(ITfContext* context, WPARAM key,
     }
     return request_result;
   }
-  // 引擎吃下了就必须报 S_OK，否则调用方会把 *eaten 改回 FALSE，这一键就
-  // 两边都生效了一次。
   return engine_took_key ? S_OK : session_result;
 }
 
@@ -162,7 +138,7 @@ HRESULT CTextService::_EnsureComposition(TfEditCookie cookie,
                                                   &composition);
   if (FAILED(result) || !composition) goto done;
 
-  _pComposition = composition;  // Own the reference returned by TSF.
+  _pComposition = composition;
   composition = nullptr;
 
   selection.range = range;
@@ -225,13 +201,9 @@ HRESULT CTextService::_CommitText(TfEditCookie cookie, ITfContext* context,
       }
       range->Release();
     } else if (SUCCEEDED(result)) {
-      result = E_FAIL;  // GetRange 报成功却没给出范围
+      result = E_FAIL;
     }
     if (FAILED(result)) {
-      // 落字没写进去。这时候还无条件结束组字，留在文档里的就是组字范围里
-      // 原来那串码（preedit），用户选的词彻底没了，屏幕上反而多出一串字母。
-      // 所以失败就把组字范围清空再收 —— 宁可这一下什么都没打出来，也不能
-      // 把一串拉丁字母留在人家文档里。
       static LONG commit_failed = 0;
       if (WithinLogBudget(&commit_failed, 8)) {
         zuxia::LogFailure(L"commit-failed", static_cast<unsigned long>(result));
@@ -271,95 +243,4 @@ void CTextService::_CancelComposition(TfEditCookie cookie,
     range->Release();
   }
   _TerminateComposition(cookie, context);
-}
-
-HRESULT CTextService::_ApplyRimeSnapshot(
-    TfEditCookie cookie, ITfContext* context,
-    const zuxia::EngineSnapshot& snapshot) {
-  if (!snapshot.commit.empty()) {
-    const HRESULT result = _CommitText(cookie, context, snapshot.commit);
-    if (SUCCEEDED(result)) {
-      // 落字成功后显示拆字窗（学习模式）
-      _ShowPartsWindow(snapshot.commit);
-    }
-    // 一次按键可以同时「落下前一段」和「还剩一段在组字」：选了只覆盖一半
-    // 输入的候选、或者选了解码器的兜底候选，都是这样。原先这里落完字就
-    // return，剩下那段 preedit 连同它的候选一起消失 —— 用户按过的键凭空
-    // 不见了。两样都要处理。
-    if (SUCCEEDED(result) && !snapshot.preedit.empty()) {
-      const HRESULT kept =
-          _SetCompositionText(cookie, context, snapshot.preedit);
-      if (SUCCEEDED(kept)) {
-        _UpdateCandidateWindow(cookie, context, snapshot);
-      } else {
-        _HideCandidateWindow();
-      }
-      return kept;
-    }
-    _HideCandidateWindow();
-    return result;
-  }
-
-  if (!snapshot.preedit.empty()) {
-    const HRESULT result = _SetCompositionText(cookie, context, snapshot.preedit);
-    if (SUCCEEDED(result)) {
-      _UpdateCandidateWindow(cookie, context, snapshot);
-    }
-    return result;
-  }
-
-  _CancelComposition(cookie, context);
-  _HideCandidateWindow();
-  return S_OK;
-}
-
-void CTextService::_UpdateCandidateWindow(
-    TfEditCookie cookie, ITfContext* context,
-    const zuxia::EngineSnapshot& snapshot) {
-  if (!candidate_window_ || snapshot.preedit.empty()) {
-    _HideCandidateWindow();
-    return;
-  }
-
-  candidate_window_->Update(snapshot.preedit, snapshot.candidates,
-                            snapshot.highlighted);
-
-  RECT anchor = {};
-  bool positioned = false;
-  ITfContextView* view = nullptr;
-  ITfRange* range = nullptr;
-  if (context && SUCCEEDED(context->GetActiveView(&view)) && view) {
-    if (_pComposition && SUCCEEDED(_pComposition->GetRange(&range)) && range) {
-      BOOL clipped = FALSE;
-      if (SUCCEEDED(view->GetTextExt(cookie, range, &anchor, &clipped))) {
-        positioned = true;
-      }
-      range->Release();
-    }
-
-    if (!positioned) {
-      HWND owner = nullptr;
-      POINT caret = {};
-      if (SUCCEEDED(view->GetWnd(&owner)) && owner && GetCaretPos(&caret) &&
-          ClientToScreen(owner, &caret)) {
-        anchor.left = caret.x;
-        anchor.bottom = caret.y + 24;
-        positioned = true;
-      }
-    }
-    view->Release();
-  }
-
-  if (!positioned) {
-    POINT cursor = {};
-    GetCursorPos(&cursor);
-    anchor.left = cursor.x;
-    anchor.bottom = cursor.y + 20;
-  }
-  candidate_window_->Move(anchor.left, anchor.bottom);
-  candidate_window_->Show();
-}
-
-void CTextService::_HideCandidateWindow() {
-  if (candidate_window_) candidate_window_->Hide();
 }

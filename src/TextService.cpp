@@ -183,7 +183,8 @@ HRESULT CTextService::_ApplyRimeSnapshot(
   }
 
   if (!snapshot.preedit.empty()) {
-    const HRESULT result = _SetCompositionText(cookie, context, snapshot.preedit);
+    const HRESULT result =
+        _SetCompositionText(cookie, context, snapshot.preedit);
     if (SUCCEEDED(result)) {
       _UpdateCandidateWindow(cookie, context, snapshot);
     }
@@ -233,9 +234,9 @@ void CTextService::_UpdateCandidateWindow(
       POINT caret = {};
       if (SUCCEEDED(view->GetWnd(&owner)) && owner && GetCaretPos(&caret) &&
           ClientToScreen(owner, &caret)) {
-        anchor.left = caret.x;
+        anchor.left   = caret.x;
         anchor.bottom = caret.y + 24;
-        positioned = true;
+        positioned    = true;
       }
     }
     view->Release();
@@ -244,14 +245,9 @@ void CTextService::_UpdateCandidateWindow(
   if (!positioned) {
     POINT cursor = {};
     GetCursorPos(&cursor);
-    anchor.left = cursor.x;
+    anchor.left   = cursor.x;
     anchor.bottom = cursor.y + 20;
   }
   candidate_window_->Move(anchor.left, anchor.bottom);
   candidate_window_->Show();
-}
-
-void CTextService::_HideCandidateWindow() {
-  if (candidate_window_) candidate_window_->Hide();
-  _UpdatePartsWindow(L"");
 }

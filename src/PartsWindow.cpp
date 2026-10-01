@@ -89,7 +89,6 @@ BOOL CALLBACK CPartsWindow::RegisterClassOnce(PINIT_ONCE, PVOID, PVOID*) {
 bool CPartsWindow::Create() {
     if (hwnd_) return true;
     if (!InitWindowClass()) return false;
-    // WS_SIZEBOX allows user to resize; WS_EX_NOACTIVATE keeps focus.
     hwnd_ = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         kClassName, L"\u62c6\u5b57",
@@ -114,18 +113,14 @@ void CPartsWindow::ShowWord(const std::wstring& text) {
     std::vector<CharParts> chars;
     for (wchar_t ch : text) {
         auto it = table_.find(ch);
-        if (it != table_.end()) {
+        if (it != table_.end())
             chars.push_back(it->second);
-        } else {
-            // Character not in table (punctuation etc.) -- skip
-        }
     }
     if (chars.empty()) { Hide(); return; }
 
     current_chars_ = std::move(chars);
     current_word_  = text;
 
-    // Rebuild fonts at new scale if window was resized
     if (font_big_)   { DeleteObject(font_big_);   font_big_   = nullptr; }
     if (font_label_) { DeleteObject(font_label_); font_label_ = nullptr; }
 
@@ -151,7 +146,6 @@ void CPartsWindow::EnsureLoaded() {
     if (loaded_) return;
     loaded_ = true;
 
-    // DLL lives in x64\ or x86\; data\ is one level up (same as RimeEngine).
     wchar_t dll_path[MAX_PATH] = {};
     GetModuleFileNameW(g_hInst, dll_path, MAX_PATH);
     std::filesystem::path dll_fs(dll_path);
@@ -192,36 +186,32 @@ void CPartsWindow::EnsureLoaded() {
 
 // -- size ------------------------------------------------------------------
 void CPartsWindow::RecalcSize() {
-    // Each character column: grid + structure label + part rows.
-    // Window width = N * column_width + padding.
-    // Window height = max column height.
     if (current_chars_.empty()) {
         width_  = Scale(280);
         height_ = Scale(200);
         return;
     }
 
-    // Use actual window size if the user has already resized it.
+    // If window is already visible and user has resized it, keep their size.
     if (hwnd_ && IsWindowVisible(hwnd_)) {
         RECT r = {};
         GetClientRect(hwnd_, &r);
-        if (r.right > 0 && r.bottom > 0) return;  // keep user size
+        if (r.right > 0 && r.bottom > 0) return;
     }
 
-    const int n      = static_cast<int>(current_chars_.size());
-    const int cell   = Scale(90);
-    const int row_h  = Scale(28);
+    const int n       = static_cast<int>(current_chars_.size());
+    const int cell    = Scale(90);
+    const int row_h   = Scale(28);
     const int label_h = Scale(22);
-    const int pad    = Scale(8);
+    const int pad     = Scale(8);
 
     int max_parts = 0;
     for (const auto& cp : current_chars_)
         max_parts = std::max(max_parts, static_cast<int>(cp.parts.size()));
 
-    const int col_w  = cell + Scale(150);  // grid + info area per column
+    const int col_w = cell + Scale(150);
     width_  = n * col_w + (n + 1) * pad;
     height_ = pad + cell + label_h + max_parts * row_h + pad;
-    // Enforce a sensible minimum
     if (width_  < Scale(260)) width_  = Scale(260);
     if (height_ < Scale(120)) height_ = Scale(120);
 }
@@ -248,7 +238,6 @@ void CPartsWindow::Paint(HDC dc, const RECT& client) {
     const int n   = static_cast<int>(current_chars_.size());
     const int pad = Scale(8);
 
-    // Divide client width equally among characters.
     const int col_w = (client.right - (n + 1) * pad) / n;
     if (col_w <= 0) return;
 
@@ -264,18 +253,20 @@ void CPartsWindow::DrawCharGrid(HDC dc, const RECT& col_rc,
     const int pad   = Scale(8);
     const int cellW = Scale(90);
     const int cellH = Scale(90);
-    // If column is narrower than grid, shrink grid to fit.
-    const int gw = std::min(cellW, col_rc.right - col_rc.left);
-    const int gh = std::min(cellH, col_rc.bottom - col_rc.top);
+    // Cast RECT members (LONG) to int before std::min to avoid template
+    // ambiguity between LONG and int (C2672).
+    const int col_width  = static_cast<int>(col_rc.right  - col_rc.left);
+    const int col_height = static_cast<int>(col_rc.bottom - col_rc.top);
+    const int gw = std::min(cellW, col_width);
+    const int gh = std::min(cellH, col_height);
 
     RECT cell_rc = { col_rc.left, col_rc.top,
                      col_rc.left + gw, col_rc.top + gh };
     DrawMiziGrid(dc, cell_rc);
 
-    // Large character inside grid
     if (!font_big_) {
         font_big_ = CreateFontW(
-            -MulDiv(56, Scale(96), 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            -Scale(56), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"\u5b8b\u4f53");
     }
@@ -286,7 +277,6 @@ void CPartsWindow::DrawCharGrid(HDC dc, const RECT& col_rc,
     DrawTextW(dc, ch_str, 1, &cell_rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     if (old) SelectObject(dc, old);
 
-    // Labels to the right of the grid
     if (!font_label_) {
         font_label_ = CreateFontW(
             -Scale(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
@@ -299,7 +289,6 @@ void CPartsWindow::DrawCharGrid(HDC dc, const RECT& col_rc,
     const int info_x = col_rc.left + gw + pad;
     int y = col_rc.top;
 
-    // Structure row
     {
         std::wstring s = L"\u7ed3\u6784\uff1a";
         s += StructureNameFor(cp.structure);
@@ -309,7 +298,6 @@ void CPartsWindow::DrawCharGrid(HDC dc, const RECT& col_rc,
         y += Scale(24);
     }
 
-    // Part rows
     SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
     for (const auto& p : cp.parts) {
         RECT r = { info_x, y, col_rc.right, y + Scale(26) };
@@ -337,10 +325,10 @@ void CPartsWindow::DrawMiziGrid(HDC dc, const RECT& r) {
     HPEN pen = CreatePen(PS_SOLID, 1, RGB(180, 180, 200));
     HPEN old = pen ? reinterpret_cast<HPEN>(SelectObject(dc, pen)) : nullptr;
     Rectangle(dc, r.left, r.top, r.right, r.bottom);
-    int cx = (r.left + r.right)  / 2;
-    int cy = (r.top  + r.bottom) / 2;
+    int cx = static_cast<int>((r.left + r.right)  / 2);
+    int cy = static_cast<int>((r.top  + r.bottom) / 2);
     MoveToEx(dc, r.left, cy, nullptr); LineTo(dc, r.right, cy);
-    MoveToEx(dc, cx, r.top, nullptr); LineTo(dc, cx, r.bottom);
+    MoveToEx(dc, cx, r.top, nullptr);  LineTo(dc, cx, r.bottom);
     HPEN pen2 = CreatePen(PS_DOT, 1, RGB(210, 210, 220));
     if (pen2) {
         SelectObject(dc, pen2);
@@ -372,7 +360,6 @@ LRESULT CALLBACK CPartsWindow::WindowProc(HWND hwnd, UINT msg,
         return 0;
     }
 
-    // Repaint on resize
     if (msg == WM_SIZE) {
         if (self) InvalidateRect(hwnd, nullptr, TRUE);
         return 0;
