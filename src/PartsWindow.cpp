@@ -1,7 +1,7 @@
 // PartsWindow.cpp -- Zuxia IME parts-analysis window (learning mode)
 // Vertical layout (default): one row per character, grid left, full info right.
 // Horizontal layout: side-by-side grids (compact).
-// Non-focus-stealing; draggable; user-resizable; right-click to hide.
+// Draggable; user-resizable; right-click to hide; does not steal focus.
 
 #include "Globals.h"
 #include "PartsWindow.h"
@@ -89,8 +89,12 @@ BOOL CALLBACK CPartsWindow::RegisterClassOnce(PINIT_ONCE, PVOID, PVOID*) {
 bool CPartsWindow::Create() {
     if (hwnd_) return true;
     if (!InitWindowClass()) return false;
+    // WS_EX_TOPMOST: always on top.
+    // WS_EX_TOOLWINDOW: no taskbar button.
+    // WS_EX_NOACTIVATE removed -- it blocks resize drags via NC hit-test.
+    // Focus stealing is prevented via WM_MOUSEACTIVATE returning MA_NOACTIVATE.
     hwnd_ = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         kClassName, L"\u62c6\u5b57",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_SIZEBOX,
         100, 100, width_, height_,
@@ -116,26 +120,21 @@ void CPartsWindow::ShowWord(const std::wstring& text) {
     }
     if (chars.empty()) { Hide(); return; }
 
-    // If the number of characters changed, forget the user-resize so the
-    // window resizes to fit the new content automatically.
-    if (chars.size() != current_chars_.size()) {
+    // Clear user-resize flag when column count changes.
+    if (chars.size() != current_chars_.size())
         user_resized_ = false;
-    }
 
     current_chars_ = std::move(chars);
     current_word_  = text;
 
-    // Rebuild fonts in case DPI changed.
     if (font_big_)   { DeleteObject(font_big_);   font_big_   = nullptr; }
     if (font_label_) { DeleteObject(font_label_); font_label_ = nullptr; }
 
-    // Resize only when user hasn't manually dragged the window border.
     if (!user_resized_) {
         RecalcSize();
         SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, width_, height_,
                      SWP_NOMOVE | SWP_NOACTIVATE);
     } else {
-        // Still keep TOPMOST and no-activate, but don't change size.
         SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
@@ -147,8 +146,6 @@ void CPartsWindow::Hide() {
     if (hwnd_) ShowWindow(hwnd_, SW_HIDE);
     current_chars_.clear();
     current_word_.clear();
-    // Don't reset user_resized_ here -- user dragged it to a preferred size,
-    // keep that across hide/show cycles of the same word length.
 }
 
 bool CPartsWindow::Visible() const {
@@ -206,9 +203,11 @@ void CPartsWindow::RecalcSize() {
     const int  n     = static_cast<int>(current_chars_.size());
 
     if (vert) {
+        // height = pad + N * (row_h + pad)
+        // where row_h = max(cellH, (1 + parts) * rowH)
         int total_h = pad;
         for (const auto& cp : current_chars_) {
-            const int info_h = rowH + static_cast<int>(cp.parts.size()) * rowH;
+            const int info_h = (1 + static_cast<int>(cp.parts.size())) * rowH;
             total_h += std::max(cellH, info_h) + pad;
         }
         width_  = cellW + Scale(260) + 2 * pad;
@@ -295,15 +294,12 @@ void CPartsWindow::Paint(HDC dc, const RECT& client) {
                 auto comma = first_name.find(L',');
                 if (comma != std::wstring::npos)
                     first_name = first_name.substr(0, comma);
-
                 std::wstring keys = p.letters;
                 for (auto& c : keys)
                     if (c >= L'a' && c <= L'z') c -= 32;
-
                 std::wstring line = p.glyph + L"  " + first_name;
                 if (!p.pinyin.empty()) line += L"  " + p.pinyin;
                 if (!keys.empty())     line += L"  \u2192  " + keys;
-
                 RECT r = { ix, iy, cw - pad, iy + rowH };
                 DrawTextW(dc, line.c_str(), -1, &r,
                           DT_LEFT | DT_VCENTER | DT_SINGLELINE);
@@ -312,6 +308,7 @@ void CPartsWindow::Paint(HDC dc, const RECT& client) {
 
             if (old) SelectObject(dc, old);
 
+            // Separator between characters (not after the last one)
             if (i < n - 1) {
                 const int sep_y = y + row_h + pad / 2;
                 HPEN pen = CreatePen(PS_SOLID, 1, RGB(220, 220, 220));
@@ -348,11 +345,9 @@ void CPartsWindow::DrawCharGridHoriz(HDC dc, const RECT& col_rc,
     const int col_h = static_cast<int>(col_rc.bottom - col_rc.top);
     const int gw = std::min(cellW, col_w);
     const int gh = std::min(cellH, col_h);
-
     RECT cell_rc = { col_rc.left, col_rc.top,
                      col_rc.left + gw, col_rc.top + gh };
     DrawMiziGrid(dc, cell_rc);
-
     EnsureFonts();
     HFONT old = font_big_
         ? reinterpret_cast<HFONT>(SelectObject(dc, font_big_)) : nullptr;
@@ -360,7 +355,6 @@ void CPartsWindow::DrawCharGridHoriz(HDC dc, const RECT& col_rc,
     wchar_t ch_str[2] = { cp.ch, 0 };
     DrawTextW(dc, ch_str, 1, &cell_rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     if (old) SelectObject(dc, old);
-
     old = font_label_
         ? reinterpret_cast<HFONT>(SelectObject(dc, font_label_)) : nullptr;
     const int ix = col_rc.left + gw + pad;
@@ -438,18 +432,31 @@ LRESULT CALLBACK CPartsWindow::WindowProc(HWND hwnd, UINT msg,
         SetWindowLongPtrW(hwnd, GWLP_USERDATA,
                           reinterpret_cast<LONG_PTR>(self));
     }
+
+    // Never steal focus when clicked (title-bar drag or button click).
     if (msg == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
-    if (msg == WM_CLOSE)  { if (self) self->Hide(); return 0; }
-    if (msg == WM_SIZE) {
-        if (self) {
-            // Mark as user-resized only when the user drags the border
-            // (wParam == SIZE_RESTORED and window was already visible).
-            if (w == SIZE_RESTORED && IsWindowVisible(hwnd))
-                self->user_resized_ = true;
-            InvalidateRect(hwnd, nullptr, TRUE);
+
+    if (msg == WM_CLOSE) { if (self) self->Hide(); return 0; }
+
+    if (msg == WM_SIZE && self) {
+        // Detect user resize: compare new client size to the computed size.
+        // During title-bar drag WM_SIZE still fires but client area stays
+        // the same as what we set, so user_resized_ won't be set spuriously.
+        RECT rc = {};
+        GetClientRect(hwnd, &rc);
+        const int cw = static_cast<int>(rc.right);
+        const int ch = static_cast<int>(rc.bottom);
+        // We track last-known client size in last_client_w_/h_.
+        if (self->last_client_w_ > 0 &&
+            (cw != self->last_client_w_ || ch != self->last_client_h_)) {
+            self->user_resized_ = true;
         }
+        self->last_client_w_ = cw;
+        self->last_client_h_ = ch;
+        InvalidateRect(hwnd, nullptr, TRUE);
         return 0;
     }
+
     if (msg == WM_PAINT && self) {
         PAINTSTRUCT ps = {};
         HDC dc = BeginPaint(hwnd, &ps);
