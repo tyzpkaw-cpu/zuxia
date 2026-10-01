@@ -486,7 +486,7 @@ def main() -> int:
                     default=root / "sources/structure-overrides.tsv",
                     help="authoritative 字→结构码 map (see sync_structure.py)")
     ap.add_argument("--out-dir", type=pathlib.Path, default=root.parent / "data")
-    ap.add_argument("--version", default="0.4.0")
+    ap.add_argument("--version", default="0.4.1")
     # The structure key sits between sound and form and is always present.
     #
     # Measured on this table, weighted by character frequency, per (code,

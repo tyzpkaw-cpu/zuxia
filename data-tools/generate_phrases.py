@@ -188,7 +188,7 @@ def main() -> int:
     # 就从几秒变成十几秒 —— 那正是 docs/工程排查.md 里记下的那个毛病。
     ap.add_argument("--limit", type=int, default=120000)
     ap.add_argument("--out-dir", type=pathlib.Path, default=root.parent / "data")
-    ap.add_argument("--version", default="0.4.0")
+    ap.add_argument("--version", default="0.4.1")
     ap.add_argument("--report", type=pathlib.Path)
     args = ap.parse_args()
 

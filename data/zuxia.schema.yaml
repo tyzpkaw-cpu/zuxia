@@ -4,7 +4,7 @@
 schema:
   schema_id: zuxia
   name: "应物音形足下输入方案"
-  version: "0.4.0"
+  version: "0.3.0"
   author:
     - "应物音形足下输入方案"
   description: |
