@@ -1,6 +1,7 @@
 #include "Globals.h"
 #include "Diagnostics.h"
 #include "TextService.h"
+#include "Settings.h"
 
 #include "CandidateWindow.h"
 #include "PartsWindow.h"
@@ -86,9 +87,6 @@ STDMETHODIMP CTextService::Activate(ITfThreadMgr* thread_mgr,
   }
 
   if (!_InitKeyEventSink()) goto error;
-  // Losing the Shift toggle costs one convenience; it must never cost the
-  // whole text service. PreserveKey can legitimately fail -- another input
-  // method may already hold the key -- and _InitPreservedKey reports that.
   _InitPreservedKey();
   if (!CCandidateWindow::InitWindowClass()) goto error;
   if (!zuxia::CPartsWindow::InitWindowClass()) goto error;
@@ -101,8 +99,6 @@ STDMETHODIMP CTextService::Activate(ITfThreadMgr* thread_mgr,
 
   if (!engine_.Initialize(g_hInst)) goto error;
 
-  // A newly selected TIP should accept input immediately. The mode itself
-  // comes from the session-wide compartment, not from this process.
   _SetKeyboardOpen(TRUE);
   _InitInputMode();
   _InitLanguageBar();
@@ -126,6 +122,7 @@ STDMETHODIMP CTextService::Deactivate() ZUXIA_COM_GUARD_BEGIN
     candidate_window_ = nullptr;
   }
   if (parts_window_) {
+    parts_window_->Hide();
     delete parts_window_;
     parts_window_ = nullptr;
   }
@@ -148,8 +145,113 @@ STDMETHODIMP CTextService::Deactivate() ZUXIA_COM_GUARD_BEGIN
   return S_OK;
 ZUXIA_COM_GUARD_END(L"CTextService::Deactivate", S_OK)
 
-void CTextService::_ShowPartsWindow(const std::wstring& committed_text) {
-  if (!parts_window_ || committed_text.empty()) return;
-  // 只对单字显示拆解；词组只取第一个字。
-  parts_window_->ShowChar(committed_text);
+void CTextService::_UpdatePartsWindow(const std::wstring& highlighted_text) {
+  if (!parts_window_) return;
+  if (!zuxia::CurrentAppearance().show_parts_window) {
+    parts_window_->Hide();
+    return;
+  }
+  if (highlighted_text.empty()) {
+    parts_window_->Hide();
+    return;
+  }
+  parts_window_->ShowWord(highlighted_text);
+}
+
+void CTextService::_HideCandidateWindow() {
+  if (candidate_window_) candidate_window_->Hide();
+  _UpdatePartsWindow(L"");
+}
+
+HRESULT CTextService::_ApplyRimeSnapshot(
+    TfEditCookie cookie, ITfContext* context,
+    const zuxia::EngineSnapshot& snapshot) {
+  if (!snapshot.commit.empty()) {
+    const HRESULT result = _CommitText(cookie, context, snapshot.commit);
+    if (SUCCEEDED(result) && !snapshot.preedit.empty()) {
+      const HRESULT kept =
+          _SetCompositionText(cookie, context, snapshot.preedit);
+      if (SUCCEEDED(kept)) {
+        _UpdateCandidateWindow(cookie, context, snapshot);
+      } else {
+        _HideCandidateWindow();
+      }
+      return kept;
+    }
+    _HideCandidateWindow();
+    return result;
+  }
+
+  if (!snapshot.preedit.empty()) {
+    const HRESULT result = _SetCompositionText(cookie, context, snapshot.preedit);
+    if (SUCCEEDED(result)) {
+      _UpdateCandidateWindow(cookie, context, snapshot);
+    }
+    return result;
+  }
+
+  _CancelComposition(cookie, context);
+  _HideCandidateWindow();
+  return S_OK;
+}
+
+void CTextService::_UpdateCandidateWindow(
+    TfEditCookie cookie, ITfContext* context,
+    const zuxia::EngineSnapshot& snapshot) {
+  if (!candidate_window_ || snapshot.preedit.empty()) {
+    _HideCandidateWindow();
+    return;
+  }
+
+  candidate_window_->Update(snapshot.preedit, snapshot.candidates,
+                            snapshot.highlighted);
+
+  // Update parts window with the currently highlighted candidate (realtime).
+  if (!snapshot.candidates.empty()) {
+    size_t idx = static_cast<size_t>(snapshot.highlighted);
+    if (idx >= snapshot.candidates.size()) idx = 0;
+    _UpdatePartsWindow(snapshot.candidates[idx].text);
+  } else {
+    _UpdatePartsWindow(L"");
+  }
+
+  RECT anchor = {};
+  bool positioned = false;
+  ITfContextView* view = nullptr;
+  ITfRange* range = nullptr;
+  if (context && SUCCEEDED(context->GetActiveView(&view)) && view) {
+    if (_pComposition && SUCCEEDED(_pComposition->GetRange(&range)) && range) {
+      BOOL clipped = FALSE;
+      if (SUCCEEDED(view->GetTextExt(cookie, range, &anchor, &clipped))) {
+        positioned = true;
+      }
+      range->Release();
+    }
+
+    if (!positioned) {
+      HWND owner = nullptr;
+      POINT caret = {};
+      if (SUCCEEDED(view->GetWnd(&owner)) && owner && GetCaretPos(&caret) &&
+          ClientToScreen(owner, &caret)) {
+        anchor.left = caret.x;
+        anchor.bottom = caret.y + 24;
+        positioned = true;
+      }
+    }
+    view->Release();
+  }
+
+  if (!positioned) {
+    POINT cursor = {};
+    GetCursorPos(&cursor);
+    anchor.left = cursor.x;
+    anchor.bottom = cursor.y + 20;
+  }
+  candidate_window_->Move(anchor.left, anchor.bottom);
+  candidate_window_->Show();
+}
+
+void CTextService::_HideCandidateWindow() {
+  if (candidate_window_) candidate_window_->Hide();
+  _UpdatePartsWindow(L"");
 }

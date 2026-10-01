@@ -1,6 +1,7 @@
-// PartsWindow.cpp — 足下输入法米字格拆字窗口（任务 7）
-// 落字后自动弹出，显示所选字的部件拆分、名称、带调拼音、字母键。
-// 不抢焦点；可拖动；双击标题区或右键隐藏。
+// PartsWindow.cpp -- Zuxia IME parts-analysis window (learning mode, task 7)
+// Updates in realtime as highlighted candidate changes.
+// Shows one grid per character for multi-char words.
+// Non-focus-stealing; draggable; user-resizable (WS_SIZEBOX); right-click to hide.
 
 #include "Globals.h"
 #include "PartsWindow.h"
@@ -14,21 +15,17 @@ namespace zuxia {
 
 namespace {
 constexpr wchar_t kClassName[] = L"ZuxiaIMEPartsWindow";
+constexpr wchar_t kTsvName[]   = L"zuxia.parts.tsv";
 
-// data/ 下相对于 DLL 所在目录的路径
-constexpr wchar_t kTsvName[] = L"zuxia.parts.tsv";
-
-// 结构码 → 中文名
 const wchar_t* StructureNameFor(const std::wstring& code) {
-    if (code == L"z") return L"左右结构";
-    if (code == L"s") return L"上下结构";
-    if (code == L"b") return L"包围结构";
-    if (code == L"p") return L"品字/其他";
-    if (code == L"d") return L"独体字";
-    return L"—";
+    if (code == L"z") return L"\u5de6\u53f3\u7ed3\u6784";
+    if (code == L"s") return L"\u4e0a\u4e0b\u7ed3\u6784";
+    if (code == L"b") return L"\u5305\u56f4\u7ed3\u6784";
+    if (code == L"p") return L"\u54c1\u5b57/\u5176\u4ed6";
+    if (code == L"d") return L"\u72ec\u4f53\u5b57";
+    return L"\u2014";
 }
 
-// 把 UTF-8 std::string 转成 std::wstring
 std::wstring Utf8ToWide(const std::string& s) {
     if (s.empty()) return {};
     int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
@@ -38,7 +35,6 @@ std::wstring Utf8ToWide(const std::string& s) {
     return out;
 }
 
-// 按 TAB 分割（单字节，不需要宽字符）
 std::vector<std::wstring> SplitTab(const std::wstring& line) {
     std::vector<std::wstring> out;
     std::wstring cur;
@@ -50,7 +46,6 @@ std::vector<std::wstring> SplitTab(const std::wstring& line) {
     return out;
 }
 
-// 按指定字符分割
 std::vector<std::wstring> Split(const std::wstring& s, wchar_t sep) {
     std::vector<std::wstring> out;
     std::wstring cur;
@@ -64,23 +59,21 @@ std::vector<std::wstring> Split(const std::wstring& s, wchar_t sep) {
 
 }  // namespace
 
-// ── 静态成员 ────────────────────────────────────────────────────────────
+// -- static members --------------------------------------------------------
 ATOM      CPartsWindow::atom_      = 0;
 INIT_ONCE CPartsWindow::init_once_ = INIT_ONCE_STATIC_INIT;
 
-// ── 生命周期 ────────────────────────────────────────────────────────────
+// -- lifecycle -------------------------------------------------------------
 CPartsWindow::CPartsWindow()  = default;
 CPartsWindow::~CPartsWindow() { Destroy(); }
 
 BOOL CPartsWindow::InitWindowClass() {
-    return InitOnceExecuteOnce(&init_once_, RegisterClassOnce,
-                               nullptr, nullptr);
+    return InitOnceExecuteOnce(&init_once_, RegisterClassOnce, nullptr, nullptr);
 }
 
-void CPartsWindow::UninitWindowClass() { /* 随 DLL 自动释放 */ }
+void CPartsWindow::UninitWindowClass() {}
 
-BOOL CALLBACK CPartsWindow::RegisterClassOnce(
-        PINIT_ONCE, PVOID, PVOID*) {
+BOOL CALLBACK CPartsWindow::RegisterClassOnce(PINIT_ONCE, PVOID, PVOID*) {
     WNDCLASSEXW wc = {};
     wc.cbSize        = sizeof(wc);
     wc.style         = CS_HREDRAW | CS_VREDRAW;
@@ -96,13 +89,11 @@ BOOL CALLBACK CPartsWindow::RegisterClassOnce(
 bool CPartsWindow::Create() {
     if (hwnd_) return true;
     if (!InitWindowClass()) return false;
-
-    // WS_CAPTION 提供可拖动的标题栏；WS_EX_NOACTIVATE 保证不抢焦点。
-    // WS_SYSMENU 让标题栏有关闭按鈕（Alt+F4 可关），不显示最小化/最大化。
+    // WS_SIZEBOX allows user to resize; WS_EX_NOACTIVATE keeps focus.
     hwnd_ = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-        kClassName, L"拆字",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        kClassName, L"\u62c6\u5b57",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_SIZEBOX,
         100, 100, width_, height_,
         nullptr, nullptr, g_hInst, this);
     return hwnd_ != nullptr;
@@ -114,21 +105,29 @@ void CPartsWindow::Destroy() {
     if (font_label_) { DeleteObject(font_label_); font_label_ = nullptr; }
 }
 
-// ── 显示/隐藏 ────────────────────────────────────────────────────────────
-void CPartsWindow::ShowChar(const std::wstring& text) {
-    if (!hwnd_ || text.empty()) return;
-    wchar_t ch = text[0];
+// -- show/hide -------------------------------------------------------------
+void CPartsWindow::ShowWord(const std::wstring& text) {
+    if (!hwnd_ || text.empty()) { Hide(); return; }
 
     EnsureLoaded();
 
-    auto it = table_.find(ch);
-    if (it == table_.end()) {
-        // 字不在表里（标点、数字等），直接隐藏
-        Hide();
-        return;
+    std::vector<CharParts> chars;
+    for (wchar_t ch : text) {
+        auto it = table_.find(ch);
+        if (it != table_.end()) {
+            chars.push_back(it->second);
+        } else {
+            // Character not in table (punctuation etc.) -- skip
+        }
     }
-    current_    = it->second;
-    has_current_ = true;
+    if (chars.empty()) { Hide(); return; }
+
+    current_chars_ = std::move(chars);
+    current_word_  = text;
+
+    // Rebuild fonts at new scale if window was resized
+    if (font_big_)   { DeleteObject(font_big_);   font_big_   = nullptr; }
+    if (font_label_) { DeleteObject(font_label_); font_label_ = nullptr; }
 
     RecalcSize();
     SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, width_, height_,
@@ -139,41 +138,37 @@ void CPartsWindow::ShowChar(const std::wstring& text) {
 
 void CPartsWindow::Hide() {
     if (hwnd_) ShowWindow(hwnd_, SW_HIDE);
-    has_current_ = false;
+    current_chars_.clear();
+    current_word_.clear();
 }
 
 bool CPartsWindow::Visible() const {
     return hwnd_ && IsWindowVisible(hwnd_);
 }
 
-// ── 懒加载 TSV ────────────────────────────────────────────────────────────
+// -- lazy-load TSV ---------------------------------------------------------
 void CPartsWindow::EnsureLoaded() {
     if (loaded_) return;
     loaded_ = true;
 
-    // DLL 在 x64\ 或 x86\ 下，data\ 在它的上一级目录
-    // （与 RimeEngine::InitializeRuntime 的路径逻辑一致）
+    // DLL lives in x64\ or x86\; data\ is one level up (same as RimeEngine).
     wchar_t dll_path[MAX_PATH] = {};
     GetModuleFileNameW(g_hInst, dll_path, MAX_PATH);
     std::filesystem::path dll_fs(dll_path);
     std::wstring tsv_path =
         (dll_fs.parent_path().parent_path() / L"data" / kTsvName).wstring();
 
-    // 以 UTF-8 模式打开
     std::ifstream f;
     f.open(tsv_path, std::ios::binary);
     if (!f.is_open()) return;
 
     std::string line_u8;
     while (std::getline(f, line_u8)) {
-        // strip CR
-        if (!line_u8.empty() && line_u8.back() == '\r')
-            line_u8.pop_back();
+        if (!line_u8.empty() && line_u8.back() == '\r') line_u8.pop_back();
         if (line_u8.empty() || line_u8[0] == '#') continue;
 
         std::wstring line = Utf8ToWide(line_u8);
         auto cols = SplitTab(line);
-        // 至少：char + structure + one part column
         if (cols.size() < 3) continue;
 
         CharParts cp;
@@ -182,7 +177,6 @@ void CPartsWindow::EnsureLoaded() {
         if (!cp.ch) continue;
 
         for (size_t i = 2; i < cols.size(); ++i) {
-            // 格式：部件|名称列表|字母|拼音
             auto fields = Split(cols[i], L'|');
             if (fields.empty()) continue;
             PartEntry pe;
@@ -190,22 +184,46 @@ void CPartsWindow::EnsureLoaded() {
             pe.names   = fields.size() > 1 ? fields[1] : L"";
             pe.letters = fields.size() > 2 ? fields[2] : L"";
             pe.pinyin  = fields.size() > 3 ? fields[3] : L"";
-            if (!pe.glyph.empty())
-                cp.parts.push_back(std::move(pe));
+            if (!pe.glyph.empty()) cp.parts.push_back(std::move(pe));
         }
         table_[cp.ch] = std::move(cp);
     }
 }
 
-// ── 尺寸计算 ────────────────────────────────────────────────────────────
+// -- size ------------------------------------------------------------------
 void CPartsWindow::RecalcSize() {
-    // 米字格高度 = 3× 标准行高；部件行每行 Scale(28)；结构标签 Scale(22)
+    // Each character column: grid + structure label + part rows.
+    // Window width = N * column_width + padding.
+    // Window height = max column height.
+    if (current_chars_.empty()) {
+        width_  = Scale(280);
+        height_ = Scale(200);
+        return;
+    }
+
+    // Use actual window size if the user has already resized it.
+    if (hwnd_ && IsWindowVisible(hwnd_)) {
+        RECT r = {};
+        GetClientRect(hwnd_, &r);
+        if (r.right > 0 && r.bottom > 0) return;  // keep user size
+    }
+
+    const int n      = static_cast<int>(current_chars_.size());
     const int cell   = Scale(90);
     const int row_h  = Scale(28);
     const int label_h = Scale(22);
-    int parts_count = has_current_ ? static_cast<int>(current_.parts.size()) : 0;
-    height_ = cell + label_h + parts_count * row_h + Scale(12);
-    width_  = Scale(260);
+    const int pad    = Scale(8);
+
+    int max_parts = 0;
+    for (const auto& cp : current_chars_)
+        max_parts = std::max(max_parts, static_cast<int>(cp.parts.size()));
+
+    const int col_w  = cell + Scale(150);  // grid + info area per column
+    width_  = n * col_w + (n + 1) * pad;
+    height_ = pad + cell + label_h + max_parts * row_h + pad;
+    // Enforce a sensible minimum
+    if (width_  < Scale(260)) width_  = Scale(260);
+    if (height_ < Scale(120)) height_ = Scale(120);
 }
 
 int CPartsWindow::Scale(int v) const {
@@ -219,78 +237,90 @@ int CPartsWindow::Scale(int v) const {
     return MulDiv(v, dpi, 96);
 }
 
-// ── 绘制 ────────────────────────────────────────────────────────────
+// -- paint -----------------------------------------------------------------
 void CPartsWindow::Paint(HDC dc, const RECT& client) {
-    // 背景
     HBRUSH bg = CreateSolidBrush(GetSysColor(COLOR_WINDOW));
     if (bg) { FillRect(dc, &client, bg); DeleteObject(bg); }
     SetBkMode(dc, TRANSPARENT);
 
-    if (!has_current_) return;
+    if (current_chars_.empty()) return;
 
+    const int n   = static_cast<int>(current_chars_.size());
+    const int pad = Scale(8);
+
+    // Divide client width equally among characters.
+    const int col_w = (client.right - (n + 1) * pad) / n;
+    if (col_w <= 0) return;
+
+    for (int i = 0; i < n; ++i) {
+        int cx = pad + i * (col_w + pad);
+        RECT col_rc = { cx, pad, cx + col_w, client.bottom - pad };
+        DrawCharGrid(dc, col_rc, current_chars_[i]);
+    }
+}
+
+void CPartsWindow::DrawCharGrid(HDC dc, const RECT& col_rc,
+                                 const CharParts& cp) {
     const int pad   = Scale(8);
     const int cellW = Scale(90);
     const int cellH = Scale(90);
+    // If column is narrower than grid, shrink grid to fit.
+    const int gw = std::min(cellW, col_rc.right - col_rc.left);
+    const int gh = std::min(cellH, col_rc.bottom - col_rc.top);
 
-    // ── 米字格 ──
-    RECT cell_rc = { pad, pad, pad + cellW, pad + cellH };
+    RECT cell_rc = { col_rc.left, col_rc.top,
+                     col_rc.left + gw, col_rc.top + gh };
     DrawMiziGrid(dc, cell_rc);
 
-    // 大字（米字格里）
+    // Large character inside grid
     if (!font_big_) {
         font_big_ = CreateFontW(
-            -Scale(56), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            -MulDiv(56, Scale(96), 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"宋体");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"\u5b8b\u4f53");
     }
     HFONT old = font_big_
         ? reinterpret_cast<HFONT>(SelectObject(dc, font_big_)) : nullptr;
     SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
-    wchar_t ch_str[2] = { current_.ch, 0 };
-    DrawTextW(dc, ch_str, 1, &cell_rc,
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    wchar_t ch_str[2] = { cp.ch, 0 };
+    DrawTextW(dc, ch_str, 1, &cell_rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     if (old) SelectObject(dc, old);
 
-    // ── 结构标签（米字格右边）──
+    // Labels to the right of the grid
     if (!font_label_) {
         font_label_ = CreateFontW(
             -Scale(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"微软雅黑");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"\u5fae\u8f6f\u96c5\u9ed8");
     }
     old = font_label_
         ? reinterpret_cast<HFONT>(SelectObject(dc, font_label_)) : nullptr;
 
-    const int info_x = pad + cellW + Scale(10);
-    int y = pad;
+    const int info_x = col_rc.left + gw + pad;
+    int y = col_rc.top;
 
-    // 结构行
+    // Structure row
     {
-        std::wstring struct_text = L"结构：";
-        struct_text += StructureNameFor(current_.structure);
-        RECT r = { info_x, y, client.right - pad, y + Scale(22) };
+        std::wstring s = L"\u7ed3\u6784\uff1a";
+        s += StructureNameFor(cp.structure);
+        RECT r = { info_x, y, col_rc.right, y + Scale(22) };
         SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT));
-        DrawTextW(dc, struct_text.c_str(), -1, &r,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(dc, s.c_str(), -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         y += Scale(24);
     }
 
-    // 部件行：每行显示「部件字  名称  拼音  → 字母」
+    // Part rows
     SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
-    for (const auto& p : current_.parts) {
-        RECT r = { info_x, y, client.right - pad, y + Scale(26) };
+    for (const auto& p : cp.parts) {
+        RECT r = { info_x, y, col_rc.right, y + Scale(26) };
 
-        // 取第一个名称显示
         std::wstring first_name = p.names;
         auto comma = first_name.find(L',');
-        if (comma != std::wstring::npos)
-            first_name = first_name.substr(0, comma);
+        if (comma != std::wstring::npos) first_name = first_name.substr(0, comma);
 
-        // 字母：大写显示
         std::wstring keys = p.letters;
         for (auto& c : keys) if (c >= L'a' && c <= L'z') c -= 32;
 
-        // 行文：「彳  人旁  rén  → R」
         std::wstring row_text = p.glyph + L"  " + first_name;
         if (!p.pinyin.empty()) row_text += L"  " + p.pinyin;
         if (!keys.empty()) row_text += L"  \u2192  " + keys;
@@ -304,34 +334,26 @@ void CPartsWindow::Paint(HDC dc, const RECT& client) {
 }
 
 void CPartsWindow::DrawMiziGrid(HDC dc, const RECT& r) {
-    // 外框
     HPEN pen = CreatePen(PS_SOLID, 1, RGB(180, 180, 200));
     HPEN old = pen ? reinterpret_cast<HPEN>(SelectObject(dc, pen)) : nullptr;
-
     Rectangle(dc, r.left, r.top, r.right, r.bottom);
-
     int cx = (r.left + r.right)  / 2;
     int cy = (r.top  + r.bottom) / 2;
-
-    // 横竖中线
-    MoveToEx(dc, r.left,  cy, nullptr); LineTo(dc, r.right, cy);
-    MoveToEx(dc, cx, r.top,  nullptr); LineTo(dc, cx, r.bottom);
-
-    // 对角线（点线，弱化）
+    MoveToEx(dc, r.left, cy, nullptr); LineTo(dc, r.right, cy);
+    MoveToEx(dc, cx, r.top, nullptr); LineTo(dc, cx, r.bottom);
     HPEN pen2 = CreatePen(PS_DOT, 1, RGB(210, 210, 220));
     if (pen2) {
         SelectObject(dc, pen2);
-        MoveToEx(dc, r.left, r.top,    nullptr); LineTo(dc, r.right, r.bottom);
-        MoveToEx(dc, r.right, r.top,   nullptr); LineTo(dc, r.left,  r.bottom);
+        MoveToEx(dc, r.left, r.top,  nullptr); LineTo(dc, r.right, r.bottom);
+        MoveToEx(dc, r.right, r.top, nullptr); LineTo(dc, r.left,  r.bottom);
         SelectObject(dc, old ? old : reinterpret_cast<HPEN>(GetStockObject(BLACK_PEN)));
         DeleteObject(pen2);
     }
-
     if (old) SelectObject(dc, old);
-    if (pen)  DeleteObject(pen);
+    if (pen) DeleteObject(pen);
 }
 
-// ── 消息处理 ────────────────────────────────────────────────────────────
+// -- message handler -------------------------------------------------------
 LRESULT CALLBACK CPartsWindow::WindowProc(HWND hwnd, UINT msg,
                                            WPARAM w, LPARAM l) {
     CPartsWindow* self = reinterpret_cast<CPartsWindow*>(
@@ -340,16 +362,19 @@ LRESULT CALLBACK CPartsWindow::WindowProc(HWND hwnd, UINT msg,
     if (msg == WM_NCCREATE) {
         auto* cs = reinterpret_cast<CREATESTRUCTW*>(l);
         self = static_cast<CPartsWindow*>(cs->lpCreateParams);
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA,
-                          reinterpret_cast<LONG_PTR>(self));
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
     }
 
-    // 标题栏点击/拖动不激活窗口
     if (msg == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
 
-    // 关闭按鈕 → 隐藏，不销毁
     if (msg == WM_CLOSE) {
         if (self) self->Hide();
+        return 0;
+    }
+
+    // Repaint on resize
+    if (msg == WM_SIZE) {
+        if (self) InvalidateRect(hwnd, nullptr, TRUE);
         return 0;
     }
 
@@ -365,7 +390,6 @@ LRESULT CALLBACK CPartsWindow::WindowProc(HWND hwnd, UINT msg,
 
     if (msg == WM_ERASEBKGND) return 1;
 
-    // 右键任意位置 → 隐藏
     if (msg == WM_RBUTTONUP && self) {
         self->Hide();
         return 0;

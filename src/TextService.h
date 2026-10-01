@@ -68,8 +68,6 @@ class CTextService : public ITfTextInputProcessor,
   BOOL _IsKeyboardOpen();
   HRESULT _SetKeyboardOpen(BOOL open);
 
-  // Chinese / Western mode. The TSF conversion compartment is the single
-  // source of truth; see InputMode.h.
   bool _IsNativeMode();
   void _SetNativeMode(bool native);
   void _ToggleInputMode();
@@ -86,7 +84,9 @@ class CTextService : public ITfTextInputProcessor,
   void _CancelComposition(TfEditCookie cookie, ITfContext* context);
 
   void _HideCandidateWindow();
-  void _ShowPartsWindow(const std::wstring& committed_text);
+  // Update parts window with the highlighted candidate text (realtime).
+  // Pass empty string to hide. Checks CurrentAppearance().show_parts_window.
+  void _UpdatePartsWindow(const std::wstring& highlighted_text);
   bool _EngineReady() const { return engine_.Ready(); }
   bool _EngineComposing() const { return engine_.IsComposing(); }
   zuxia::RimeEngine& _Engine() { return engine_; }
@@ -104,8 +104,6 @@ class CTextService : public ITfTextInputProcessor,
   BOOL _InitLanguageBar();
   void _UninitLanguageBar();
   BOOL _IsKeyEaten(ITfContext* context, WPARAM key);
-  // Shift 是中/西切换键，而 ：？！（）""《》 全都要按住 Shift 才打得出。
-  // 见 KeyEventSink.cpp 里 _NoteKeyForShiftTap 的注释。
   void _NoteKeyForShiftTap(WPARAM key);
 
   HRESULT _EnsureComposition(TfEditCookie cookie, ITfContext* context);
@@ -128,7 +126,6 @@ class CTextService : public ITfTextInputProcessor,
   zuxia::CPartsWindow* parts_window_ = nullptr;
   CModeButton* lang_bar_ = nullptr;
   zuxia::RimeEngine engine_;
-  // 这一次 Shift 按下期间是否还按过别的键。按过就不是「轻敲 Shift」。
   bool _shiftUsedWithKey = false;
   LONG _cRef = 1;
 };

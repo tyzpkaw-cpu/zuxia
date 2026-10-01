@@ -19,8 +19,6 @@ FILETIME g_stamp = {};
 DWORD g_checked = 0;
 bool g_loaded = false;
 
-// 文件被改过之后最多 500 ms 生效。再勤快就是每次按键都去问一次文件系统，
-// 而设置文件一天也改不了几次。
 constexpr DWORD kRecheckMs = 500;
 
 std::wstring LocalAppData() {
@@ -36,7 +34,7 @@ std::wstring LocalAppData() {
 std::wstring Trim(const std::wstring& text) {
   auto blank = [](wchar_t c) {
     return c == L' ' || c == L'\t' || c == L'\r' || c == L'\n' ||
-           c == L'\u3000';  // 全角空格：中文输入法用户很容易打出来
+           c == L'\u3000';
   };
   size_t begin = 0;
   size_t end = text.size();
@@ -54,7 +52,6 @@ bool Contains(const std::wstring& text, const wchar_t* needle) {
   return text.find(needle) != std::wstring::npos;
 }
 
-// 读整个文件并当 UTF-8 解码。记事本默认存 UTF-8 带 BOM，所以 BOM 要吃掉。
 bool ReadUtf8(const std::wstring& path, std::wstring* out) {
   HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
                             FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
@@ -78,8 +75,6 @@ bool ReadUtf8(const std::wstring& path, std::wstring* out) {
       static_cast<unsigned char>(bytes[2]) == 0xBF) {
     bytes.erase(0, 3);
   }
-  // 只剩 BOM（或彻底空）说明上一次写盘写崩了 —— 当成读失败，让调用方退回
-  // 默认值，而不是把它当成「用户把所有项都清空了」。
   if (bytes.empty()) {
     out->clear();
     return false;
@@ -97,7 +92,6 @@ bool ReadUtf8(const std::wstring& path, std::wstring* out) {
   return true;
 }
 
-// WriteFile 可能只写进去一部分，返回 TRUE 也一样。必须看 written 并补写。
 bool WriteAll(HANDLE file, const void* data, size_t size) {
   const char* cursor = static_cast<const char*>(data);
   while (size > 0) {
@@ -112,7 +106,6 @@ bool WriteAll(HANDLE file, const void* data, size_t size) {
   return true;
 }
 
-// 带 BOM 写出去：记事本不看 BOM 就会把中文当 ANSI 读，一开就是乱码。
 bool WriteBody(HANDLE file, const std::string& bytes) {
   const char bom[3] = {'\xEF', '\xBB', '\xBF'};
   if (!WriteAll(file, bom, 3)) return false;
@@ -133,7 +126,6 @@ bool WriteUtf8(const std::wstring& path, const std::wstring& text,
                         bytes.data(), needed, nullptr, nullptr);
   }
 
-  // 「只在不存在时创建」这层语义只能直接对目标文件下手。
   if (!overwrite) {
     HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
                               CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -144,8 +136,6 @@ bool WriteUtf8(const std::wstring& path, const std::wstring& text,
     return ok;
   }
 
-  // 覆盖写先落到同目录的临时文件，全写成功才改名顶上去。CREATE_ALWAYS 直接
-  // 冲原文件的话，中途失败会留下一个被截断的 zuxia.txt，用户的配色全没了。
   const std::wstring temp = path + L".new";
   HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr,
                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -178,51 +168,52 @@ std::wstring Hex(COLORREF color) {
 }
 
 std::wstring ColorField(bool follow_system, COLORREF color) {
-  return follow_system ? std::wstring(L"跟随系统") : Hex(color);
+  return follow_system ? std::wstring(L"\u8ddf\u968f\u7cfb\u7edf") : Hex(color);
 }
 
-// 设置文件的全文。注释每次都原样写回去 —— 用设置程序改过之后，拿记事本
-// 打开仍然要看得懂能改什么。
 std::wstring Serialize(const Appearance& look) {
   std::wstring out;
-  out += L"# 应物音形足下输入法 —— 候选窗外观设置\r\n";
+  out += L"# \u5e94\u7269\u97f3\u5f62\u8db3\u4e0b\u8f93\u5165\u6cd5 \u2014\u2014 \u5019\u9009\u7a97\u5916\u89c2\u8bbe\u7f6e\r\n";
   out += L"#\r\n";
-  out += L"# 改完保存即可，最慢半秒生效，不用重启输入法。\r\n";
-  out += L"# 也可以用开始菜单里的「足下输入法设置」改，那边是图形界面。\r\n";
-  out += L"# 井号开头的是说明，删不删都行。写坏了不要紧：认不出来的行会被跳过，\r\n";
-  out += L"# 整个文件删掉则恢复默认，下次打字会重新生成一份。\r\n";
+  out += L"# \u6539\u5b8c\u4fdd\u5b58\u5373\u53ef\uff0c\u6700\u6162\u534a\u79d2\u751f\u6548\uff0c\u4e0d\u7528\u91cd\u542f\u8f93\u5165\u6cd5\u3002\r\n";
+  out += L"# \u4e5f\u53ef\u4ee5\u7528\u5f00\u59cb\u83dc\u5355\u91cc\u7684\u300c\u8db3\u4e0b\u8f93\u5165\u6cd5\u8bbe\u7f6e\u300d\u6539\uff0c\u90a3\u8fb9\u662f\u56fe\u5f62\u754c\u9762\u3002\r\n";
+  out += L"# \u4e95\u53f7\u5f00\u5934\u7684\u662f\u8bf4\u660e\uff0c\u5220\u4e0d\u5220\u90fd\u884c\u3002\u5199\u574f\u4e86\u4e0d\u8981\u7d27\uff1a\u8ba4\u4e0d\u51fa\u6765\u7684\u884c\u4f1a\u88ab\u8df3\u8fc7\uff0c\r\n";
+  out += L"# \u6574\u4e2a\u6587\u4ef6\u5220\u6389\u5219\u6062\u590d\u9ed8\u8ba4\uff0c\u4e0b\u6b21\u6253\u5b57\u4f1a\u91cd\u65b0\u751f\u6210\u4e00\u4efd\u3002\r\n";
   out += L"#\r\n";
-  out += L"# 颜色写 #RRGGBB（网页那种十六进制），或者写「跟随系统」。\r\n";
+  out += L"# \u989c\u8272\u5199 #RRGGBB\uff08\u7f51\u9875\u90a3\u79cd\u5341\u516d\u8fdb\u5236\uff09\uff0c\u6216\u8005\u5199\u300c\u8ddf\u968f\u7cfb\u7edf\u300d\u3002\r\n";
   out += L"\r\n";
-  out += L"字体 = " + look.font + L"\r\n";
-  out += L"字号 = " + Num(look.font_size) + L"\r\n";
+  out += L"\u5b57\u4f53 = " + look.font + L"\r\n";
+  out += L"\u5b57\u53f7 = " + Num(look.font_size) + L"\r\n";
   out += L"\r\n";
-  out += L"# 竖排 = 候选一行一个；横排 = 候选排成一行\r\n";
-  out += L"候选排列 = " + std::wstring(look.horizontal ? L"横排" : L"竖排") + L"\r\n";
+  out += L"# \u7ad6\u6392 = \u5019\u9009\u4e00\u884c\u4e00\u4e2a\uff1b\u6a2a\u6392 = \u5019\u9009\u6392\u6210\u4e00\u884c\r\n";
+  out += L"\u5019\u9009\u6392\u5217 = " + std::wstring(look.horizontal ? L"\u6a2a\u6392" : L"\u7ad6\u6392") + L"\r\n";
   out += L"\r\n";
-  out += L"行高 = " + Num(look.row_height) + L"\r\n";
-  out += L"内边距 = " + Num(look.padding) + L"\r\n";
-  out += L"最小宽度 = " + Num(look.min_width) + L"\r\n";
-  out += L"最大宽度 = " + Num(look.max_width) + L"\r\n";
+  out += L"\u884c\u9ad8 = " + Num(look.row_height) + L"\r\n";
+  out += L"\u5185\u8fb9\u8ddd = " + Num(look.padding) + L"\r\n";
+  out += L"\u6700\u5c0f\u5bbd\u5ea6 = " + Num(look.min_width) + L"\r\n";
+  out += L"\u6700\u5927\u5bbd\u5ea6 = " + Num(look.max_width) + L"\r\n";
   out += L"\r\n";
-  out += L"窗口背景 = " + ColorField(look.system_background, look.background) + L"\r\n";
-  out += L"正文颜色 = " + ColorField(look.system_text, look.text) + L"\r\n";
-  out += L"编码颜色 = " + ColorField(look.system_dim, look.dim) + L"\r\n";
-  out += L"选中底色 = " + Hex(look.highlight_bg) + L"\r\n";
-  out += L"选中文字 = " + Hex(look.highlight_fg) + L"\r\n";
+  out += L"\u7a97\u53e3\u80cc\u666f = " + ColorField(look.system_background, look.background) + L"\r\n";
+  out += L"\u6b63\u6587\u989c\u8272 = " + ColorField(look.system_text, look.text) + L"\r\n";
+  out += L"\u7f16\u7801\u989c\u8272 = " + ColorField(look.system_dim, look.dim) + L"\r\n";
+  out += L"\u9009\u4e2d\u5e95\u8272 = " + Hex(look.highlight_bg) + L"\r\n";
+  out += L"\u9009\u4e2d\u6587\u5b57 = " + Hex(look.highlight_fg) + L"\r\n";
   out += L"\r\n";
-  out += L"# 任务栏右下角那个输入指示器上显示的字，一个字最好看。\r\n";
-  out += L"任务栏图标 = " + look.tray_chinese + L"\r\n";
-  out += L"西文图标 = " + look.tray_western + L"\r\n";
+  out += L"# \u4efb\u52a1\u680f\u53f3\u4e0b\u89d2\u90a3\u4e2a\u8f93\u5165\u6307\u793a\u5668\u4e0a\u663e\u793a\u7684\u5b57\uff0c\u4e00\u4e2a\u5b57\u6700\u597d\u770b\u3002\r\n";
+  out += L"\u4efb\u52a1\u680f\u56fe\u6807 = " + look.tray_chinese + L"\r\n";
+  out += L"\u897f\u6587\u56fe\u6807 = " + look.tray_western + L"\r\n";
   out += L"\r\n";
-  out += L"# 候选个数、中英切换键这些不在这里 —— 它们属于 librime 的行为，\r\n";
-  out += L"# 在安装目录的 data\\default.yaml 与 data\\zuxia.schema.yaml 里。\r\n";
+  out += L"# \u62c6\u5b57\u7a97\u53e3 = \u5f00\u542f\u5b66\u4e60\u6a21\u5f0f\uff08\u5019\u9009\u9ad8\u4eae\u65f6\u5b9e\u65f6\u663e\u793a\u62c6\u5b57\uff09\r\n";
+  out += L"\u62c6\u5b57\u7a97\u53e3 = " + std::wstring(look.show_parts_window ? L"\u5f00\u542f" : L"\u5173\u95ed") + L"\r\n";
+  out += L"\r\n";
+  out += L"# \u5019\u9009\u4e2a\u6570\u3001\u4e2d\u82f1\u5207\u6362\u952e\u8fd9\u4e9b\u4e0d\u5728\u8fd9\u91cc \u2014\u2014 \u5b83\u4eec\u5c5e\u4e8e librime \u7684\u884c\u4e3a\uff0c\r\n";
+  out += L"# \u5728\u5b89\u88c5\u76ee\u5f55\u7684 data\\\\default.yaml \u4e0e data\\\\zuxia.schema.yaml \u91cc\u3002\r\n";
   return out;
 }
 
 bool ParseColor(const std::wstring& value, COLORREF* out, bool* system) {
   const std::wstring lowered = Lower(value);
-  if (Contains(value, L"跟随") || Contains(value, L"系统") ||
+  if (Contains(value, L"\u8ddf\u968f") || Contains(value, L"\u7cfb\u7edf") ||
       lowered == L"system" || lowered == L"auto" || lowered == L"default") {
     *system = true;
     return true;
@@ -234,7 +225,6 @@ bool ParseColor(const std::wstring& value, COLORREF* out, bool* system) {
   if (digits.size() != 6) return false;
   const unsigned long packed = wcstoul(digits.c_str(), nullptr, 16);
   *system = false;
-  // 文件里写的是 #RRGGBB，Win32 的 COLORREF 是 0x00BBGGRR，要反过来。
   *out = RGB((packed >> 16) & 0xFF, (packed >> 8) & 0xFF, packed & 0xFF);
   return true;
 }
@@ -248,8 +238,6 @@ int ParseInt(const std::wstring& value, int fallback, int low, int high) {
   return static_cast<int>(parsed);
 }
 
-// 去掉行尾注释。颜色值本身就以井号开头（#RRGGBB），所以只有「空白 + #」才算
-// 注释的起点；写在值开头的那个井号要留着。
 std::wstring StripInlineComment(const std::wstring& value) {
   for (size_t i = 1; i < value.size(); ++i) {
     if (value[i] != L'#') continue;
@@ -262,9 +250,8 @@ std::wstring StripInlineComment(const std::wstring& value) {
 void ApplyLine(const std::wstring& raw, Appearance* out) {
   const std::wstring line = Trim(raw);
   if (line.empty() || line[0] == L'#' || line[0] == L';') return;
-  const size_t split = line.find_first_of(L"=:：＝");
+  const size_t split = line.find_first_of(L"=:\uff1a\uff1d");
   if (split == std::wstring::npos) return;
-  // 分隔符之前就冒出井号 —— 整行是注释，里头的「：」不算分隔符。
   if (line.substr(0, split).find(L'#') != std::wstring::npos) return;
   const std::wstring key = Trim(line.substr(0, split));
   const std::wstring value =
@@ -272,37 +259,39 @@ void ApplyLine(const std::wstring& raw, Appearance* out) {
   if (key.empty() || value.empty()) return;
   const std::wstring k = Lower(key);
 
-  if (key == L"字体" || k == L"font") {
+  if (key == L"\u5b57\u4f53" || k == L"font") {
     out->font = value;
-  } else if (key == L"字号" || k == L"font_size" || k == L"size") {
+  } else if (key == L"\u5b57\u53f7" || k == L"font_size" || k == L"size") {
     out->font_size = ParseInt(value, out->font_size, 8, 72);
-  } else if (key == L"候选排列" || key == L"排列" || k == L"layout") {
-    out->horizontal = Contains(value, L"横") || Contains(Lower(value), L"horiz");
-  } else if (key == L"行高" || k == L"row_height") {
+  } else if (key == L"\u5019\u9009\u6392\u5217" || key == L"\u6392\u5217" || k == L"layout") {
+    out->horizontal = Contains(value, L"\u6a2a") || Contains(Lower(value), L"horiz");
+  } else if (key == L"\u884c\u9ad8" || k == L"row_height") {
     out->row_height = ParseInt(value, out->row_height, 16, 120);
-  } else if (key == L"内边距" || k == L"padding") {
+  } else if (key == L"\u5185\u8fb9\u8ddd" || k == L"padding") {
     out->padding = ParseInt(value, out->padding, 0, 40);
-  } else if (key == L"最小宽度" || k == L"min_width") {
+  } else if (key == L"\u6700\u5c0f\u5bbd\u5ea6" || k == L"min_width") {
     out->min_width = ParseInt(value, out->min_width, 60, 4000);
-  } else if (key == L"最大宽度" || k == L"max_width") {
+  } else if (key == L"\u6700\u5927\u5bbd\u5ea6" || k == L"max_width") {
     out->max_width = ParseInt(value, out->max_width, 120, 8000);
-  } else if (key == L"窗口背景" || key == L"背景" || k == L"background") {
+  } else if (key == L"\u7a97\u53e3\u80cc\u666f" || key == L"\u80cc\u666f" || k == L"background") {
     ParseColor(value, &out->background, &out->system_background);
-  } else if (key == L"正文颜色" || key == L"文字颜色" || k == L"text_color") {
+  } else if (key == L"\u6b63\u6587\u989c\u8272" || key == L"\u6587\u5b57\u989c\u8272" || k == L"text_color") {
     ParseColor(value, &out->text, &out->system_text);
-  } else if (key == L"编码颜色" || k == L"dim_color") {
+  } else if (key == L"\u7f16\u7801\u989c\u8272" || k == L"dim_color") {
     ParseColor(value, &out->dim, &out->system_dim);
-  } else if (key == L"选中底色" || k == L"highlight_background") {
+  } else if (key == L"\u9009\u4e2d\u5e95\u8272" || k == L"highlight_background") {
     bool ignored = false;
     ParseColor(value, &out->highlight_bg, &ignored);
-  } else if (key == L"选中文字" || k == L"highlight_text") {
+  } else if (key == L"\u9009\u4e2d\u6587\u5b57" || k == L"highlight_text") {
     bool ignored = false;
     ParseColor(value, &out->highlight_fg, &ignored);
-  } else if (key == L"任务栏图标" || k == L"tray_icon") {
-    // 留空当没写 —— 交不出图标，任务栏就退回去显示「简体」，不如保留默认。
+  } else if (key == L"\u4efb\u52a1\u680f\u56fe\u6807" || k == L"tray_icon") {
     if (!value.empty()) out->tray_chinese = value.substr(0, 2);
-  } else if (key == L"西文图标" || k == L"tray_icon_western") {
+  } else if (key == L"\u897f\u6587\u56fe\u6807" || k == L"tray_icon_western") {
     if (!value.empty()) out->tray_western = value.substr(0, 2);
+  } else if (key == L"\u62c6\u5b57\u7a97\u53e3" || k == L"parts_window" || k == L"show_parts_window") {
+    const std::wstring lv = Lower(value);
+    out->show_parts_window = Contains(lv, L"\u5f00") || lv == L"on" || lv == L"true" || lv == L"1" || lv == L"yes";
   }
   if (out->max_width < out->min_width) out->max_width = out->min_width;
 }
@@ -327,7 +316,7 @@ std::wstring SettingsFilePath() {
   path /= L"Zuxia";
   std::error_code error;
   std::filesystem::create_directories(path, error);
-  path /= L"设置.txt";
+  path /= L"\u8bbe\u7f6e.txt";
   return path.wstring();
 }
 
@@ -340,8 +329,6 @@ Appearance LoadAppearance() {
 bool SaveAppearance(const Appearance& look) {
   const bool ok = WriteUtf8(SettingsFilePath(), Serialize(look), true);
   if (ok) {
-    // 下一次 CurrentAppearance() 必须重读，别等那 500 ms 的轮询 ——
-    // 同一个进程里若也在打字（引擎自测程序就是），会看到旧值。
     std::lock_guard<std::mutex> guard(g_mutex);
     g_loaded = false;
   }
@@ -357,8 +344,6 @@ Appearance CurrentAppearance() {
   const std::wstring path = SettingsFilePath();
   WIN32_FILE_ATTRIBUTE_DATA info = {};
   if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info)) {
-    // 还没有这个文件。写一份默认的，让用户打开就看得见能改什么。
-    // 写不出来也无所谓（只读目录、被杀软拦了），默认值照样用。
     WriteUtf8(path, Serialize(Appearance()), false);
     if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info)) {
       g_appearance = Appearance();
