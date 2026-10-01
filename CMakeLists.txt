@@ -26,6 +26,7 @@ foreach(required IN ITEMS "${RIME_INCLUDE_DIR}/rime_api.h"
 endforeach()
 
 set(ZUXIA_SOURCES
+  src/PartsWindow.cpp
   src/CandidateWindow.cpp
   src/Compartment.cpp
   src/Composition.cpp

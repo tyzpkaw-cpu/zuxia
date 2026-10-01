@@ -5,6 +5,7 @@
 
 class CCandidateWindow;
 class CModeButton;
+namespace zuxia { class CPartsWindow; }
 
 class CTextService : public ITfTextInputProcessor,
                      public ITfThreadMgrEventSink,
@@ -85,6 +86,7 @@ class CTextService : public ITfTextInputProcessor,
   void _CancelComposition(TfEditCookie cookie, ITfContext* context);
 
   void _HideCandidateWindow();
+  void _ShowPartsWindow(const std::wstring& committed_text);
   bool _EngineReady() const { return engine_.Ready(); }
   bool _EngineComposing() const { return engine_.IsComposing(); }
   zuxia::RimeEngine& _Engine() { return engine_; }
@@ -123,6 +125,7 @@ class CTextService : public ITfTextInputProcessor,
   ITfCompartment* _pModeCompartment = nullptr;
   DWORD _dwModeSinkCookie = TF_INVALID_COOKIE;
   CCandidateWindow* candidate_window_ = nullptr;
+  zuxia::CPartsWindow* parts_window_ = nullptr;
   CModeButton* lang_bar_ = nullptr;
   zuxia::RimeEngine engine_;
   // 这一次 Shift 按下期间是否还按过别的键。按过就不是「轻敲 Shift」。

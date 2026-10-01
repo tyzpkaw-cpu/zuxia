@@ -278,6 +278,10 @@ HRESULT CTextService::_ApplyRimeSnapshot(
     const zuxia::EngineSnapshot& snapshot) {
   if (!snapshot.commit.empty()) {
     const HRESULT result = _CommitText(cookie, context, snapshot.commit);
+    if (SUCCEEDED(result)) {
+      // 落字成功后显示拆字窗（学习模式）
+      _ShowPartsWindow(snapshot.commit);
+    }
     // 一次按键可以同时「落下前一段」和「还剩一段在组字」：选了只覆盖一半
     // 输入的候选、或者选了解码器的兜底候选，都是这样。原先这里落完字就
     // return，剩下那段 preedit 连同它的候选一起消失 —— 用户按过的键凭空

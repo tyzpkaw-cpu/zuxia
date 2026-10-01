@@ -3,6 +3,7 @@
 #include "TextService.h"
 
 #include "CandidateWindow.h"
+#include "PartsWindow.h"
 
 #include <new>
 
@@ -25,6 +26,10 @@ CTextService::~CTextService() {
   if (candidate_window_) {
     delete candidate_window_;
     candidate_window_ = nullptr;
+  }
+  if (parts_window_) {
+    delete parts_window_;
+    parts_window_ = nullptr;
   }
   engine_.Shutdown();
   DllRelease();
@@ -86,9 +91,14 @@ STDMETHODIMP CTextService::Activate(ITfThreadMgr* thread_mgr,
   // method may already hold the key -- and _InitPreservedKey reports that.
   _InitPreservedKey();
   if (!CCandidateWindow::InitWindowClass()) goto error;
+  if (!zuxia::CPartsWindow::InitWindowClass()) goto error;
 
   candidate_window_ = new (std::nothrow) CCandidateWindow();
   if (!candidate_window_ || !candidate_window_->Create()) goto error;
+
+  parts_window_ = new (std::nothrow) zuxia::CPartsWindow();
+  if (!parts_window_ || !parts_window_->Create()) goto error;
+
   if (!engine_.Initialize(g_hInst)) goto error;
 
   // A newly selected TIP should accept input immediately. The mode itself
@@ -115,6 +125,10 @@ STDMETHODIMP CTextService::Deactivate() ZUXIA_COM_GUARD_BEGIN
     delete candidate_window_;
     candidate_window_ = nullptr;
   }
+  if (parts_window_) {
+    delete parts_window_;
+    parts_window_ = nullptr;
+  }
 
   if (_pComposition) {
     _pComposition->Release();
@@ -133,3 +147,9 @@ STDMETHODIMP CTextService::Deactivate() ZUXIA_COM_GUARD_BEGIN
   _tfClientId = 0;
   return S_OK;
 ZUXIA_COM_GUARD_END(L"CTextService::Deactivate", S_OK)
+
+void CTextService::_ShowPartsWindow(const std::wstring& committed_text) {
+  if (!parts_window_ || committed_text.empty()) return;
+  // 只对单字显示拆解；词组只取第一个字。
+  parts_window_->ShowChar(committed_text);
+}
