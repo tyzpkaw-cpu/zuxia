@@ -279,7 +279,7 @@ int main() {
   printf("\nDead code falls back to the longest valid prefix:\n");
   engine.Clear();
   zuxia::EngineSnapshot dead;
-  for (const char* p = "zuxiasdkh"; *p; ++p) {
+  for (const char* p = "zuxiasdkq"; *p; ++p) {
     dead = engine.ProcessKey(static_cast<int>(*p), 0);
   }
   // Rime 的 speller 会挡掉它不认的键，所以先看清它到底收下了几个。
@@ -292,16 +292,16 @@ int main() {
       break;
     }
   }
-  Expect("足下 is still offered for zuxiasdkh (prefix zuxiasdk)",
+  Expect("足下 is still offered for zuxiasdkq (prefix zuxiasdk)",
          fallback_at < dead.candidates.size() && fallback_at < 9);
   if (fallback_at < dead.candidates.size() && fallback_at < 9) {
     const zuxia::EngineSnapshot picked =
         engine.ProcessKey(static_cast<int>('1' + fallback_at), 0);
     Expect("picking it commits the prefix word", picked.commit == L"足下");
-    if (raw_before == "zuxiasdkh") {
-      // 全部九个键都进去了，那没用上的 h 必须回到组字里。
+    if (raw_before == "zuxiasdkq") {
+      // 全部九个键都进去了，那没用上的 q 必须回到组字里。
       Expect("the unused tail keeps composing instead of vanishing",
-             !picked.preedit.empty() && engine.RawInput() == "h");
+             !picked.preedit.empty() && engine.RawInput() == "q");
       printf("  tail left composing: ");
       Print(picked.preedit);
       printf("\n");
@@ -313,21 +313,23 @@ int main() {
   }
   engine.Clear();
 
-  // 组字中的控制键：这一段不是在修什么，是把现在的行为钉死，免得哪天无声
-  // 改掉。外部复审实测指出回车走的是 librime 的 express_editor —— 它把原始
-  // 码串当文本落进文档（微软拼音、搜狗都是这个行为），Esc 只清组字。两者
-  // 都被我们吃掉，所以组字期间换行和 Esc 到不了应用。这是行为取舍，不是
-  // 缺陷，但必须有断言看着。
+  // 组字中的控制键。0.2.0 的回车走 librime 的 express_editor，把原始码串
+  // 当文本落进文档（微软拼音、搜狗都是这个行为）—— 真机上这正是「揽月打
+  // 一半按回车，部件码 ry 落进聊天框」的根因。0.3.0 起在 express_editor
+  // 之前拦下回车：放弃这次组字，什么都不落；打英文走中/西切换。Esc 的行
+  // 为没动，本来就是只清组字。两者都被吃掉，所以组字期间换行和 Esc 到不
+  // 了应用，这是行为取舍，不是缺陷，但必须有断言看着。
   printf("\nControl keys while composing (pinned, not fixed):\n");
   engine.Clear();
   for (const char* p = "suyao"; *p; ++p) engine.ProcessKey(static_cast<int>(*p), 0);
   const std::string raw_for_return = engine.RawInput();
   const zuxia::EngineSnapshot on_return = engine.ProcessKey(0xff0d, 0);  // XK_Return
   Expect("Return while composing is handled by the engine", on_return.handled);
-  Expect("Return commits the raw code string as text",
-         on_return.commit == std::wstring(raw_for_return.begin(),
-                                          raw_for_return.end()));
+  Expect("Return had something to discard", !raw_for_return.empty());
+  Expect("Return commits nothing (0.3.0: the composition is discarded)",
+         on_return.commit.empty());
   Expect("nothing is left composing after Return", !on_return.composing);
+  Expect("Return clears the raw input too", engine.RawInput().empty());
   engine.Clear();
 
   for (const char* p = "suyao"; *p; ++p) engine.ProcessKey(static_cast<int>(*p), 0);

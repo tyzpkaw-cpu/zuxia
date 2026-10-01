@@ -39,12 +39,18 @@ suyao    sz           cw          -> 苏瑶
 |---|---|---|
 | 解码算法（C++） | 37 条断言 | Linux + CI |
 | 解码算法（Python 参考） | 15 条断言 | CI |
-| 码表不变量、版本一致性 | `data-tools/audit_zuxia.py`，26 条 | CI |
-| 引擎行为（真 librime、真词表） | `tools/engine-test.cpp`，50 条断言 | CI，真 Windows |
+| 码表不变量、版本一致性 | `data-tools/audit_zuxia.py`，27 条（`--regen` 再加 4 条） | CI |
+| 引擎行为（真 librime、真词表） | `tools/engine-test.cpp`，51 条断言 | CI，真 Windows |
 | 出货载荷（自证提交、清单逐条重算、数据逐字节比对、DLL 诊断串） | `scripts/audit-payload.ps1`，8 组硬断言 | CI，真 Windows |
 | **TSF 那一层** | **零** | **只能真机手动** |
 
 也就是说：`src/KeyEventSink.cpp`、`src/KeyHandler.cpp`、`src/TextService.cpp`、`src/InputMode.cpp`、`src/CandidateWindow.cpp` 这几个文件里的任何改动，**都没有任何自动化测试碰得到**。这一个月里最难查的几个缺陷全出在这一层。你在这几个文件里看出来的任何问题，价值都高于别处。
+
+**0.3.0 的三个修复全部落在这一层**，只过了 CI 的 MSVC 编译，一条真机验证都没有：
+
+- `src/KeyEventSink.cpp` — Caps Lock 亮着且没在组字时让字母直通应用（日志标记 `caps-lock-passthrough`）
+- `src/RimeEngine.cpp` — 组字途中按回车改成放弃这次组字、什么都不落（原来会把原始码串当英文落进文档）
+- `src/CandidateWindow.cpp` — `min_width` 下限 220→120，并且同一次组字里只长不缩
 
 还有两件：
 
@@ -120,7 +126,7 @@ suyao    sz           cw          -> 苏瑶
 这几条不是没想过，是想过之后决定这么做的。要推翻请带论据，但别当成疏漏报上来：
 
 - **不做通用纠偏／模糊音。** 容错应该做在规则层（`speller/algebra`），不在算法层。理由是可解释性：列式码的每一位都对应汉字的一个可见事实（读音、结构、部件），打错了用户能自己看出错在哪一位；算法层纠偏会把这条性质抹掉，出错时只能猜。
-  这条**不**建立在「码打满就唯一」之上——那个说法是错的。实测满码唯一率只有 82.45%，有 32.62% 的字（占输入频率 23.45%）打满仍需选字。数字用 `python3 data-tools/measure_zuxia.py data/zuxia.dict.yaml` 复现
+  这条**不**建立在「码打满就唯一」之上——那个说法是错的。实测满码唯一率只有 85.03%，有 26.95% 的字（占输入频率 26.03%）打满仍需选字。数字用 `python3 data-tools/measure_zuxia.py data/zuxia.dict.yaml` 复现
 - **解码器不做按次数的调频，只做回流。** 选一次就生效，只按「最近用过」排序，最多前置 3 条。错选一次的代价是下次选对，一步翻回来；按次数排的话得再选好多次才追得上
 - **结构码以国标为准。** 判定依据是 GF 0013—2009《现代常用独体字规范》（扫描件逐字抄录，存在 `data-tools/sources/gf0013-duti.txt`，256 字）。以前那份硬编码 46 字的独体字表判错了 214 个国标独体字，占全部输入频率的 18.94%
 - **诊断日志只记事件，绝不记内容。** 用户打了什么、选了什么，一个字都不进 `zuxia.log`。加任何新的写入点之前请先读 `src/Diagnostics.h` 顶上那段约定
@@ -131,8 +137,10 @@ suyao    sz           cw          -> 苏瑶
 不需要 Windows，下面这些在 Linux/macOS 上就能跑：
 
 ```bash
-python3 data-tools/generate_phrases.py          # 生成词组码表（不进 git）
-python3 data-tools/audit_zuxia.py               # 码表与源码的不变量
+python3 data-tools/generate_zuxia.py            # 单字码表（0.3.0 起不进 git）
+python3 data-tools/generate_codes.py            # 候选注释表（同上）
+python3 data-tools/generate_phrases.py          # 词组码表与解码器数据（不进 git）
+python3 data-tools/audit_zuxia.py               # 码表与源码的不变量，27 条
 python3 data-tools/decode_zuxia.py --selftest   # 解码算法参考实现，15 条
 g++ -std=c++17 -O2 -o /tmp/dsel \
   tools/linux-selftest/decoder-selftest.cpp src/Decoder.cpp \
