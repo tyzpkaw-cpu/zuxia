@@ -6,6 +6,7 @@
 #include "PartsWindow.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -63,11 +64,11 @@ std::vector<std::wstring> Split(const std::wstring& s, wchar_t sep) {
 
 }  // namespace
 
-// ── 静态成员 ──────────────────────────────────────────────────────────────
+// ── 静态成员 ────────────────────────────────────────────────────────────
 ATOM      CPartsWindow::atom_      = 0;
 INIT_ONCE CPartsWindow::init_once_ = INIT_ONCE_STATIC_INIT;
 
-// ── 生命周期 ──────────────────────────────────────────────────────────────
+// ── 生命周期 ────────────────────────────────────────────────────────────
 CPartsWindow::CPartsWindow()  = default;
 CPartsWindow::~CPartsWindow() { Destroy(); }
 
@@ -97,7 +98,7 @@ bool CPartsWindow::Create() {
     if (!InitWindowClass()) return false;
 
     // WS_CAPTION 提供可拖动的标题栏；WS_EX_NOACTIVATE 保证不抢焦点。
-    // WS_SYSMENU 让标题栏有关闭按钮（Alt+F4 可关），但不显示最小化/最大化。
+    // WS_SYSMENU 让标题栏有关闭按鈕（Alt+F4 可关），不显示最小化/最大化。
     hwnd_ = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         kClassName, L"拆字",
@@ -113,7 +114,7 @@ void CPartsWindow::Destroy() {
     if (font_label_) { DeleteObject(font_label_); font_label_ = nullptr; }
 }
 
-// ── 显示/隐藏 ─────────────────────────────────────────────────────────────
+// ── 显示/隐藏 ────────────────────────────────────────────────────────────
 void CPartsWindow::ShowChar(const std::wstring& text) {
     if (!hwnd_ || text.empty()) return;
     wchar_t ch = text[0];
@@ -150,13 +151,13 @@ void CPartsWindow::EnsureLoaded() {
     if (loaded_) return;
     loaded_ = true;
 
-    // 找 DLL 旁边的 data\ 目录
+    // DLL 在 x64\ 或 x86\ 下，data\ 在它的上一级目录
+    // （与 RimeEngine::InitializeRuntime 的路径逻辑一致）
     wchar_t dll_path[MAX_PATH] = {};
     GetModuleFileNameW(g_hInst, dll_path, MAX_PATH);
-    std::wstring dir(dll_path);
-    auto slash = dir.rfind(L'\\');
-    if (slash != std::wstring::npos) dir.resize(slash + 1);
-    std::wstring tsv_path = dir + L"data\\" + kTsvName;
+    std::filesystem::path dll_fs(dll_path);
+    std::wstring tsv_path =
+        (dll_fs.parent_path().parent_path() / L"data" / kTsvName).wstring();
 
     // 以 UTF-8 模式打开
     std::ifstream f;
@@ -196,7 +197,7 @@ void CPartsWindow::EnsureLoaded() {
     }
 }
 
-// ── 尺寸计算 ──────────────────────────────────────────────────────────────
+// ── 尺寸计算 ────────────────────────────────────────────────────────────
 void CPartsWindow::RecalcSize() {
     // 米字格高度 = 3× 标准行高；部件行每行 Scale(28)；结构标签 Scale(22)
     const int cell   = Scale(90);
@@ -218,7 +219,7 @@ int CPartsWindow::Scale(int v) const {
     return MulDiv(v, dpi, 96);
 }
 
-// ── 绘制 ──────────────────────────────────────────────────────────────────
+// ── 绘制 ────────────────────────────────────────────────────────────
 void CPartsWindow::Paint(HDC dc, const RECT& client) {
     // 背景
     HBRUSH bg = CreateSolidBrush(GetSysColor(COLOR_WINDOW));
@@ -292,7 +293,7 @@ void CPartsWindow::Paint(HDC dc, const RECT& client) {
         // 行文：「彳  人旁  rén  → R」
         std::wstring row_text = p.glyph + L"  " + first_name;
         if (!p.pinyin.empty()) row_text += L"  " + p.pinyin;
-        if (!keys.empty()) row_text += L"  →  " + keys;
+        if (!keys.empty()) row_text += L"  \u2192  " + keys;
 
         DrawTextW(dc, row_text.c_str(), -1, &r,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -330,7 +331,7 @@ void CPartsWindow::DrawMiziGrid(HDC dc, const RECT& r) {
     if (pen)  DeleteObject(pen);
 }
 
-// ── 消息处理 ──────────────────────────────────────────────────────────────
+// ── 消息处理 ────────────────────────────────────────────────────────────
 LRESULT CALLBACK CPartsWindow::WindowProc(HWND hwnd, UINT msg,
                                            WPARAM w, LPARAM l) {
     CPartsWindow* self = reinterpret_cast<CPartsWindow*>(
@@ -346,7 +347,7 @@ LRESULT CALLBACK CPartsWindow::WindowProc(HWND hwnd, UINT msg,
     // 标题栏点击/拖动不激活窗口
     if (msg == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
 
-    // 关闭按钮 → 隐藏，不销毁
+    // 关闭按鈕 → 隐藏，不销毁
     if (msg == WM_CLOSE) {
         if (self) self->Hide();
         return 0;
