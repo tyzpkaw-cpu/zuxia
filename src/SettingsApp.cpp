@@ -1,14 +1,12 @@
-// ZuxiaSettings.exe —— 足下输入法的设置界面。
+// ZuxiaSettings.exe -- Zuxia IME settings window.
 //
-// 输入法本体读的还是那个纯文本文件 %LOCALAPPDATA%\Zuxia\设置.txt；这个程序
-// 只是它的一张脸。两条好处：文本文件那条路一个字节都没变（想手改照样手改，
-// 远程支持时一句话就能说清），而这个进程崩了也碰不到输入法 —— 它跑在自己
-// 的进程里，不在 Word 和浏览器的地址空间里。
+// The IME core still reads the same plain-text file %LOCALAPPDATA%\Zuxia\设置.txt;
+// this program is just a GUI front-end for it. Two benefits: the text-file path
+// is unchanged (users can still hand-edit; remote support is one sentence), and
+// a crash here cannot affect the IME -- it runs in its own process.
 //
-// 改完点「应用」，输入法最慢半秒自己看到，不用重启、不用重新部署。
-//
-// 界面全部用代码摆，不走对话框资源：布局要跟着 DPI 缩放，而 .rc 里的对话框
-// 单位是按字体格算的，中文字体一换就散架。
+// Clicking Apply writes the file; the IME picks up changes within 500 ms.
+// All controls are positioned absolutely so layout scales with DPI.
 
 #include <windows.h>
 
@@ -24,7 +22,7 @@
 namespace {
 
 const wchar_t kClassName[] = L"ZuxiaSettingsWindow";
-const wchar_t kTitle[] = L"应物音形足下输入法 · 设置";
+const wchar_t kTitle[]     = L"\u5e94\u7269\u97f3\u5f62\u8db3\u4e0b\u8f93\u5165\u6cd5 \u00b7 \u8bbe\u7f6e";
 
 enum ControlId : int {
   kFontText = 1001,
@@ -50,6 +48,7 @@ enum ControlId : int {
   kHighlightFg,
   kTrayChinese,
   kTrayWestern,
+  kShowPartsWindow,   // new: learning mode checkbox
   kPreview,
   kRestoreDefaults,
   kOpenFile,
@@ -58,21 +57,20 @@ enum ControlId : int {
   kCancel,
 };
 
-zuxia::Appearance g_look;      // 界面上此刻的值
-zuxia::Appearance g_original;  // 打开程序时文件里的值，「取消」要退回这里
-bool g_applied = false;        // 按过「应用」没有 —— 按过，取消才需要回写
+zuxia::Appearance g_look;
+zuxia::Appearance g_original;
+bool g_applied = false;
 int g_dpi = 96;
 HFONT g_ui_font = nullptr;
 HFONT g_section_font = nullptr;
 HWND g_main = nullptr;
 
-// 控件全是绝对定位的，所以这两个数就是内容的真实大小（逻辑单位）。
-// 改 BuildControls 里最靠下那一行控件的话，kContentHeight 要跟着改。
-constexpr int kContentWidth = 520;
-constexpr int kContentHeight = 736;
+// Content height increased by ~60 px to accommodate the new section.
+constexpr int kContentWidth  = 520;
+constexpr int kContentHeight = 800;
 
-int g_content_px = 0;   // 内容总高，像素。CreateWindow 之前必须填好
-int g_scroll_pos = 0;   // 已经滚上去多少像素
+int g_content_px = 0;
+int g_scroll_pos = 0;
 
 int S(int value) { return MulDiv(value, g_dpi, 96); }
 
@@ -119,18 +117,20 @@ COLORREF Resolve(bool follow_system, COLORREF color, int sys_index) {
   return follow_system ? GetSysColor(sys_index) : color;
 }
 
-// ------------------------------------------------------------------ 界面 --
+// ---------------------------------------------------------------- controls --
 
 void PushLookToControls(HWND hwnd) {
   const std::wstring caption = g_look.font + L"    " +
                                std::to_wstring(g_look.font_size) + L" px";
   SetDlgItemTextW(hwnd, kFontText, caption.c_str());
-  CheckDlgButton(hwnd, kVertical, g_look.horizontal ? BST_UNCHECKED : BST_CHECKED);
-  CheckDlgButton(hwnd, kHorizontal, g_look.horizontal ? BST_CHECKED : BST_UNCHECKED);
+  CheckDlgButton(hwnd, kVertical,
+                 g_look.horizontal ? BST_UNCHECKED : BST_CHECKED);
+  CheckDlgButton(hwnd, kHorizontal,
+                 g_look.horizontal ? BST_CHECKED : BST_UNCHECKED);
   SetInt(hwnd, kRowHeight, g_look.row_height);
-  SetInt(hwnd, kPadding, g_look.padding);
-  SetInt(hwnd, kMinWidth, g_look.min_width);
-  SetInt(hwnd, kMaxWidth, g_look.max_width);
+  SetInt(hwnd, kPadding,   g_look.padding);
+  SetInt(hwnd, kMinWidth,  g_look.min_width);
+  SetInt(hwnd, kMaxWidth,  g_look.max_width);
   CheckDlgButton(hwnd, kBackgroundSystem,
                  g_look.system_background ? BST_CHECKED : BST_UNCHECKED);
   CheckDlgButton(hwnd, kTextSystem,
@@ -138,11 +138,12 @@ void PushLookToControls(HWND hwnd) {
   CheckDlgButton(hwnd, kDimSystem,
                  g_look.system_dim ? BST_CHECKED : BST_UNCHECKED);
   EnableWindow(GetDlgItem(hwnd, kBackgroundColor), !g_look.system_background);
-  EnableWindow(GetDlgItem(hwnd, kTextColor), !g_look.system_text);
-  EnableWindow(GetDlgItem(hwnd, kDimColor), !g_look.system_dim);
+  EnableWindow(GetDlgItem(hwnd, kTextColor),       !g_look.system_text);
+  EnableWindow(GetDlgItem(hwnd, kDimColor),        !g_look.system_dim);
   SetDlgItemTextW(hwnd, kTrayChinese, g_look.tray_chinese.c_str());
   SetDlgItemTextW(hwnd, kTrayWestern, g_look.tray_western.c_str());
-  // 自绘的那几个是子窗口，刷父窗口刷不到它们，得逐个点名。
+  CheckDlgButton(hwnd, kShowPartsWindow,
+                 g_look.show_parts_window ? BST_CHECKED : BST_UNCHECKED);
   const int repaint[] = {kBackgroundColor, kTextColor,   kDimColor,
                          kHighlightBg,     kHighlightFg, kPreview};
   for (int id : repaint) {
@@ -152,66 +153,66 @@ void PushLookToControls(HWND hwnd) {
 }
 
 void PullLookFromControls(HWND hwnd) {
-  g_look.horizontal = IsDlgButtonChecked(hwnd, kHorizontal) == BST_CHECKED;
-  g_look.row_height = GetInt(hwnd, kRowHeight, g_look.row_height, 12, 200);
-  g_look.padding = GetInt(hwnd, kPadding, g_look.padding, 0, 64);
-  g_look.min_width = GetInt(hwnd, kMinWidth, g_look.min_width, 80, 2000);
-  g_look.max_width = GetInt(hwnd, kMaxWidth, g_look.max_width, 80, 4000);
+  g_look.horizontal  = IsDlgButtonChecked(hwnd, kHorizontal) == BST_CHECKED;
+  g_look.row_height  = GetInt(hwnd, kRowHeight, g_look.row_height, 12, 200);
+  g_look.padding     = GetInt(hwnd, kPadding,   g_look.padding,    0,  64);
+  g_look.min_width   = GetInt(hwnd, kMinWidth,  g_look.min_width,  80, 2000);
+  g_look.max_width   = GetInt(hwnd, kMaxWidth,  g_look.max_width,  80, 4000);
   if (g_look.max_width < g_look.min_width) g_look.max_width = g_look.min_width;
   g_look.system_background =
       IsDlgButtonChecked(hwnd, kBackgroundSystem) == BST_CHECKED;
   g_look.system_text = IsDlgButtonChecked(hwnd, kTextSystem) == BST_CHECKED;
-  g_look.system_dim = IsDlgButtonChecked(hwnd, kDimSystem) == BST_CHECKED;
-  // 图标位留空就等于没写，输入法那边会退回默认；这里也一样，别把空串存进去。
+  g_look.system_dim  = IsDlgButtonChecked(hwnd, kDimSystem)  == BST_CHECKED;
   const std::wstring cn = GetText(hwnd, kTrayChinese, 2);
   const std::wstring en = GetText(hwnd, kTrayWestern, 2);
   if (!cn.empty()) g_look.tray_chinese = cn;
   if (!en.empty()) g_look.tray_western = en;
+  g_look.show_parts_window =
+      IsDlgButtonChecked(hwnd, kShowPartsWindow) == BST_CHECKED;
 }
 
 void ApplyPreset(int id) {
   switch (id) {
     case kPresetSystem:
       g_look.system_background = true;
-      g_look.system_text = true;
-      g_look.system_dim = true;
+      g_look.system_text       = true;
+      g_look.system_dim        = true;
       g_look.highlight_bg = RGB(35, 104, 190);
       g_look.highlight_fg = RGB(255, 255, 255);
       break;
     case kPresetLight:
       g_look.system_background = g_look.system_text = g_look.system_dim = false;
       g_look.background = RGB(255, 255, 255);
-      g_look.text = RGB(32, 32, 32);
-      g_look.dim = RGB(130, 130, 130);
+      g_look.text       = RGB(32, 32, 32);
+      g_look.dim        = RGB(130, 130, 130);
       g_look.highlight_bg = RGB(35, 104, 190);
       g_look.highlight_fg = RGB(255, 255, 255);
       break;
     case kPresetDark:
       g_look.system_background = g_look.system_text = g_look.system_dim = false;
       g_look.background = RGB(32, 32, 32);
-      g_look.text = RGB(235, 235, 235);
-      g_look.dim = RGB(150, 150, 150);
+      g_look.text       = RGB(235, 235, 235);
+      g_look.dim        = RGB(150, 150, 150);
       g_look.highlight_bg = RGB(0, 120, 212);
       g_look.highlight_fg = RGB(255, 255, 255);
       break;
     case kPresetEye:
       g_look.system_background = g_look.system_text = g_look.system_dim = false;
       g_look.background = RGB(199, 237, 204);
-      g_look.text = RGB(38, 60, 42);
-      g_look.dim = RGB(96, 125, 102);
+      g_look.text       = RGB(38, 60, 42);
+      g_look.dim        = RGB(96, 125, 102);
       g_look.highlight_bg = RGB(58, 122, 74);
       g_look.highlight_fg = RGB(255, 255, 255);
       break;
     case kPresetContrast:
       g_look.system_background = g_look.system_text = g_look.system_dim = false;
       g_look.background = RGB(0, 0, 0);
-      g_look.text = RGB(255, 255, 255);
-      g_look.dim = RGB(255, 255, 0);
+      g_look.text       = RGB(255, 255, 255);
+      g_look.dim        = RGB(255, 255, 0);
       g_look.highlight_bg = RGB(255, 255, 0);
       g_look.highlight_fg = RGB(0, 0, 0);
       break;
-    default:
-      break;
+    default: break;
   }
 }
 
@@ -219,8 +220,8 @@ bool PickColor(HWND hwnd, COLORREF* color) {
   static COLORREF custom[16] = {};
   CHOOSECOLORW choose = {};
   choose.lStructSize = sizeof(choose);
-  choose.hwndOwner = hwnd;
-  choose.rgbResult = *color;
+  choose.hwndOwner   = hwnd;
+  choose.rgbResult   = *color;
   choose.lpCustColors = custom;
   choose.Flags = CC_FULLOPEN | CC_RGBINIT | CC_ANYCOLOR;
   if (!ChooseColorW(&choose)) return false;
@@ -230,34 +231,34 @@ bool PickColor(HWND hwnd, COLORREF* color) {
 
 bool PickFont(HWND hwnd) {
   LOGFONTW lf = {};
-  lf.lfHeight = -S(g_look.font_size);
-  lf.lfCharSet = DEFAULT_CHARSET;
+  lf.lfHeight   = -S(g_look.font_size);
+  lf.lfCharSet  = DEFAULT_CHARSET;
   lstrcpynW(lf.lfFaceName, g_look.font.c_str(), LF_FACESIZE);
   CHOOSEFONTW choose = {};
   choose.lStructSize = sizeof(choose);
-  choose.hwndOwner = hwnd;
-  choose.lpLogFont = &lf;
+  choose.hwndOwner   = hwnd;
+  choose.lpLogFont   = &lf;
   choose.Flags = CF_SCREENFONTS | CF_INITTOLOGFONTSTRUCT | CF_NOSCRIPTSEL |
                  CF_NOVERTFONTS;
   if (!ChooseFontW(&choose)) return false;
   g_look.font = lf.lfFaceName;
   const int height = lf.lfHeight < 0 ? -lf.lfHeight : lf.lfHeight;
   int size = MulDiv(height, 96, g_dpi);
-  if (size < 8) size = 8;
+  if (size < 8)  size = 8;
   if (size > 72) size = 72;
   g_look.font_size = size;
   return true;
 }
 
-// 预览：照候选窗的画法摆一遍，颜色、字体、行高、横竖排都按当前设置走。
-// 不求像素级一致 —— 求的是「改了这个数，屏幕上会变成什么样」看得见。
 void DrawPreview(const DRAWITEMSTRUCT* item) {
-  HDC dc = item->hDC;
+  HDC dc   = item->hDC;
   RECT box = item->rcItem;
   const COLORREF back =
       Resolve(g_look.system_background, g_look.background, COLOR_WINDOW);
-  const COLORREF fore = Resolve(g_look.system_text, g_look.text, COLOR_WINDOWTEXT);
-  const COLORREF dim = Resolve(g_look.system_dim, g_look.dim, COLOR_GRAYTEXT);
+  const COLORREF fore =
+      Resolve(g_look.system_text, g_look.text, COLOR_WINDOWTEXT);
+  const COLORREF dim =
+      Resolve(g_look.system_dim, g_look.dim, COLOR_GRAYTEXT);
 
   HBRUSH brush = CreateSolidBrush(back);
   FillRect(dc, &box, brush);
@@ -275,13 +276,12 @@ void DrawPreview(const DRAWITEMSTRUCT* item) {
   const int row = S(g_look.row_height);
   int y = box.top + pad;
 
-  // 编码行
   RECT line = {box.left + pad, y, box.right - pad, y + row};
   SetTextColor(dc, dim);
   DrawTextW(dc, L"qingzs", -1, &line, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
   y += row;
 
-  static const wchar_t* kItems[] = {L"1 清", L"2 情", L"3 请"};
+  static const wchar_t* kItems[] = {L"1 \u6e05", L"2 \u60c5", L"3 \u8bf7"};
   if (g_look.horizontal) {
     int x = box.left + pad;
     for (int i = 0; i < 3; ++i) {
@@ -297,7 +297,8 @@ void DrawPreview(const DRAWITEMSTRUCT* item) {
       } else {
         SetTextColor(dc, fore);
       }
-      DrawTextW(dc, kItems[i], -1, &cell, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+      DrawTextW(dc, kItems[i], -1, &cell,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       x = cell.right;
     }
   } else {
@@ -314,7 +315,8 @@ void DrawPreview(const DRAWITEMSTRUCT* item) {
       }
       RECT text = cell;
       text.left += S(8);
-      DrawTextW(dc, kItems[i], -1, &text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+      DrawTextW(dc, kItems[i], -1, &text,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE);
       y = cell.bottom;
     }
   }
@@ -334,95 +336,115 @@ void DrawSwatch(const DRAWITEMSTRUCT* item, COLORREF color, bool enabled) {
   if (item->itemState & ODS_FOCUS) DrawFocusRect(item->hDC, &box);
 }
 
-// ------------------------------------------------------------- 窗口过程 --
+// --------------------------------------------------------------- layout --
 
 void BuildControls(HWND hwnd) {
-  Add(hwnd, L"STATIC", L"候选窗外观", SS_LEFT, 20, 14, 200, 22, -1,
-      g_section_font);
+  // ---- candidate window appearance ----
+  Add(hwnd, L"STATIC", L"\u5019\u9009\u7a97\u5916\u89c2", SS_LEFT,
+      20, 14, 200, 22, -1, g_section_font);
 
-  Label(hwnd, L"字体", 20, 50, 60, 22);
-  Add(hwnd, L"STATIC", L"", SS_LEFT | SS_CENTERIMAGE | WS_BORDER, 85, 46, 275,
-      26, kFontText, g_ui_font);
-  Add(hwnd, L"BUTTON", L"选择字体…", BS_PUSHBUTTON | WS_TABSTOP, 370, 46, 110,
-      26, kFontPick, g_ui_font);
+  Label(hwnd, L"\u5b57\u4f53", 20, 50, 60, 22);
+  Add(hwnd, L"STATIC", L"", SS_LEFT | SS_CENTERIMAGE | WS_BORDER,
+      85, 46, 275, 26, kFontText, g_ui_font);
+  Add(hwnd, L"BUTTON", L"\u9009\u62e9\u5b57\u4f53\u2026",
+      BS_PUSHBUTTON | WS_TABSTOP, 370, 46, 110, 26, kFontPick, g_ui_font);
 
-  Label(hwnd, L"候选排列", 20, 88, 60, 22);
-  Add(hwnd, L"BUTTON", L"竖排", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 85,
-      86, 70, 24, kVertical, g_ui_font);
-  Add(hwnd, L"BUTTON", L"横排", BS_AUTORADIOBUTTON, 160, 86, 70, 24,
-      kHorizontal, g_ui_font);
+  Label(hwnd, L"\u5019\u9009\u6392\u5217", 20, 88, 60, 22);
+  Add(hwnd, L"BUTTON", L"\u7ad6\u6392",
+      BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP,
+      85, 86, 70, 24, kVertical, g_ui_font);
+  Add(hwnd, L"BUTTON", L"\u6a2a\u6392", BS_AUTORADIOBUTTON,
+      160, 86, 70, 24, kHorizontal, g_ui_font);
 
-  Label(hwnd, L"行高", 20, 126, 60, 22);
-  Add(hwnd, L"EDIT", L"", ES_NUMBER | ES_LEFT | WS_BORDER | WS_TABSTOP, 85, 124,
-      60, 26, kRowHeight, g_ui_font);
-  Label(hwnd, L"内边距", 165, 126, 60, 22);
-  Add(hwnd, L"EDIT", L"", ES_NUMBER | ES_LEFT | WS_BORDER | WS_TABSTOP, 230, 124,
-      60, 26, kPadding, g_ui_font);
+  Label(hwnd, L"\u884c\u9ad8", 20, 126, 60, 22);
+  Add(hwnd, L"EDIT", L"", ES_NUMBER | ES_LEFT | WS_BORDER | WS_TABSTOP,
+      85, 124, 60, 26, kRowHeight, g_ui_font);
+  Label(hwnd, L"\u5185\u8fb9\u8ddd", 165, 126, 60, 22);
+  Add(hwnd, L"EDIT", L"", ES_NUMBER | ES_LEFT | WS_BORDER | WS_TABSTOP,
+      230, 124, 60, 26, kPadding, g_ui_font);
 
-  Label(hwnd, L"最小宽度", 20, 164, 60, 22);
-  Add(hwnd, L"EDIT", L"", ES_NUMBER | ES_LEFT | WS_BORDER | WS_TABSTOP, 85, 162,
-      60, 26, kMinWidth, g_ui_font);
-  Label(hwnd, L"最大宽度", 165, 164, 60, 22);
-  Add(hwnd, L"EDIT", L"", ES_NUMBER | ES_LEFT | WS_BORDER | WS_TABSTOP, 230, 162,
-      60, 26, kMaxWidth, g_ui_font);
+  Label(hwnd, L"\u6700\u5c0f\u5bbd\u5ea6", 20, 164, 60, 22);
+  Add(hwnd, L"EDIT", L"", ES_NUMBER | ES_LEFT | WS_BORDER | WS_TABSTOP,
+      85, 162, 60, 26, kMinWidth, g_ui_font);
+  Label(hwnd, L"\u6700\u5927\u5bbd\u5ea6", 165, 164, 60, 22);
+  Add(hwnd, L"EDIT", L"", ES_NUMBER | ES_LEFT | WS_BORDER | WS_TABSTOP,
+      230, 162, 60, 26, kMaxWidth, g_ui_font);
 
-  Add(hwnd, L"STATIC", L"配色", SS_LEFT, 20, 206, 200, 22, -1, g_section_font);
-  Label(hwnd, L"预设", 20, 240, 60, 22);
-  const wchar_t* presets[] = {L"跟随系统", L"浅色", L"深色", L"护眼", L"高对比"};
+  // ---- color ----
+  Add(hwnd, L"STATIC", L"\u914d\u8272", SS_LEFT,
+      20, 206, 200, 22, -1, g_section_font);
+  Label(hwnd, L"\u9884\u8bbe", 20, 240, 60, 22);
+  const wchar_t* presets[] = {
+      L"\u8ddf\u968f\u7cfb\u7edf", L"\u6d45\u8272",
+      L"\u6df1\u8272",             L"\u62a4\u773c",
+      L"\u9ad8\u5bf9\u6bd4"};
   for (int i = 0; i < 5; ++i) {
     Add(hwnd, L"BUTTON", presets[i], BS_PUSHBUTTON | WS_TABSTOP,
         85 + i * 82, 238, 78, 26, kPresetSystem + i, g_ui_font);
   }
 
-  struct ColorRow {
-    const wchar_t* label;
-    int check_id;
-    int swatch_id;
-    int y;
-  };
+  struct ColorRow { const wchar_t* label; int check_id; int swatch_id; int y; };
   const ColorRow rows[] = {
-      {L"窗口背景", kBackgroundSystem, kBackgroundColor, 278},
-      {L"正文颜色", kTextSystem, kTextColor, 312},
-      {L"编码颜色", kDimSystem, kDimColor, 346},
+      {L"\u7a97\u53e3\u80cc\u666f", kBackgroundSystem, kBackgroundColor, 278},
+      {L"\u6b63\u6587\u989c\u8272", kTextSystem,       kTextColor,       312},
+      {L"\u7f16\u7801\u989c\u8272", kDimSystem,        kDimColor,        346},
   };
   for (const ColorRow& row : rows) {
     Label(hwnd, row.label, 20, row.y + 3, 70, 22);
-    Add(hwnd, L"BUTTON", L"跟随系统", BS_AUTOCHECKBOX | WS_TABSTOP, 95, row.y + 2,
-        100, 24, row.check_id, g_ui_font);
-    Add(hwnd, L"BUTTON", L"", BS_OWNERDRAW | WS_TABSTOP, 205, row.y, 70, 26,
-        row.swatch_id, g_ui_font);
+    Add(hwnd, L"BUTTON", L"\u8ddf\u968f\u7cfb\u7edf",
+        BS_AUTOCHECKBOX | WS_TABSTOP,
+        95, row.y + 2, 100, 24, row.check_id, g_ui_font);
+    Add(hwnd, L"BUTTON", L"", BS_OWNERDRAW | WS_TABSTOP,
+        205, row.y, 70, 26, row.swatch_id, g_ui_font);
   }
-  Label(hwnd, L"选中底色", 20, 383, 70, 22);
-  Add(hwnd, L"BUTTON", L"", BS_OWNERDRAW | WS_TABSTOP, 205, 380, 70, 26,
-      kHighlightBg, g_ui_font);
-  Label(hwnd, L"选中文字", 20, 417, 70, 22);
-  Add(hwnd, L"BUTTON", L"", BS_OWNERDRAW | WS_TABSTOP, 205, 414, 70, 26,
-      kHighlightFg, g_ui_font);
+  Label(hwnd, L"\u9009\u4e2d\u5e95\u8272", 20, 383, 70, 22);
+  Add(hwnd, L"BUTTON", L"", BS_OWNERDRAW | WS_TABSTOP,
+      205, 380, 70, 26, kHighlightBg, g_ui_font);
+  Label(hwnd, L"\u9009\u4e2d\u6587\u5b57", 20, 417, 70, 22);
+  Add(hwnd, L"BUTTON", L"", BS_OWNERDRAW | WS_TABSTOP,
+      205, 414, 70, 26, kHighlightFg, g_ui_font);
 
-  Add(hwnd, L"STATIC", L"任务栏图标", SS_LEFT, 20, 456, 200, 22, -1,
-      g_section_font);
-  Label(hwnd, L"中文", 20, 490, 40, 22);
-  Add(hwnd, L"EDIT", L"", ES_LEFT | WS_BORDER | WS_TABSTOP, 65, 488, 50, 26,
-      kTrayChinese, g_ui_font);
-  Label(hwnd, L"西文", 135, 490, 40, 22);
-  Add(hwnd, L"EDIT", L"", ES_LEFT | WS_BORDER | WS_TABSTOP, 180, 488, 50, 26,
-      kTrayWestern, g_ui_font);
-  Label(hwnd, L"任务栏右下角那个输入指示器上显示的字", 250, 490, 250, 22);
+  // ---- tray icon ----
+  Add(hwnd, L"STATIC", L"\u4efb\u52a1\u680f\u56fe\u6807", SS_LEFT,
+      20, 456, 200, 22, -1, g_section_font);
+  Label(hwnd, L"\u4e2d\u6587", 20, 490, 40, 22);
+  Add(hwnd, L"EDIT", L"", ES_LEFT | WS_BORDER | WS_TABSTOP,
+      65, 488, 50, 26, kTrayChinese, g_ui_font);
+  Label(hwnd, L"\u897f\u6587", 135, 490, 40, 22);
+  Add(hwnd, L"EDIT", L"", ES_LEFT | WS_BORDER | WS_TABSTOP,
+      180, 488, 50, 26, kTrayWestern, g_ui_font);
+  Label(hwnd,
+        L"\u4efb\u52a1\u680f\u53f3\u4e0b\u89d2\u90a3\u4e2a\u8f93\u5165"
+        L"\u6307\u793a\u5668\u4e0a\u663e\u793a\u7684\u5b57",
+        250, 490, 250, 22);
 
-  Add(hwnd, L"STATIC", L"预览", SS_LEFT, 20, 528, 200, 22, -1, g_section_font);
-  Add(hwnd, L"STATIC", L"", SS_OWNERDRAW, 20, 556, 480, 120, kPreview,
-      g_ui_font);
+  // ---- learning mode ----
+  Add(hwnd, L"STATIC",
+      L"\u62c6\u5b57\u7a97\u53e3\uff08\u5b66\u4e60\u6a21\u5f0f\uff09",
+      SS_LEFT, 20, 530, 300, 22, -1, g_section_font);
+  Add(hwnd, L"BUTTON",
+      L"\u5f00\u542f\u2014\u2014\u5019\u9009\u9ad8\u4eae\u65f6\u5b9e\u65f6"
+      L"\u663e\u793a\u62c6\u5b57\uff08\u591a\u5b57\u8bcd\u6bcf\u5b57\u4e00\u683c\uff09",
+      BS_AUTOCHECKBOX | WS_TABSTOP,
+      20, 558, 460, 26, kShowPartsWindow, g_ui_font);
 
-  Add(hwnd, L"BUTTON", L"恢复默认", BS_PUSHBUTTON | WS_TABSTOP, 20, 692, 100, 30,
-      kRestoreDefaults, g_ui_font);
-  Add(hwnd, L"BUTTON", L"打开设置文件", BS_PUSHBUTTON | WS_TABSTOP, 128, 692, 120,
-      30, kOpenFile, g_ui_font);
-  Add(hwnd, L"BUTTON", L"应用", BS_PUSHBUTTON | WS_TABSTOP, 290, 692, 66, 30,
-      kApply, g_ui_font);
-  Add(hwnd, L"BUTTON", L"确定", BS_DEFPUSHBUTTON | WS_TABSTOP, 364, 692, 66, 30,
-      kConfirm, g_ui_font);
-  Add(hwnd, L"BUTTON", L"取消", BS_PUSHBUTTON | WS_TABSTOP, 438, 692, 66, 30,
-      kCancel, g_ui_font);
+  // ---- preview ----
+  Add(hwnd, L"STATIC", L"\u9884\u89c8", SS_LEFT,
+      20, 598, 200, 22, -1, g_section_font);
+  Add(hwnd, L"STATIC", L"", SS_OWNERDRAW,
+      20, 626, 480, 120, kPreview, g_ui_font);
+
+  // ---- buttons ----
+  Add(hwnd, L"BUTTON", L"\u6062\u590d\u9ed8\u8ba4",
+      BS_PUSHBUTTON | WS_TABSTOP, 20, 762, 100, 30, kRestoreDefaults, g_ui_font);
+  Add(hwnd, L"BUTTON", L"\u6253\u5f00\u8bbe\u7f6e\u6587\u4ef6",
+      BS_PUSHBUTTON | WS_TABSTOP, 128, 762, 120, 30, kOpenFile, g_ui_font);
+  Add(hwnd, L"BUTTON", L"\u5e94\u7528",
+      BS_PUSHBUTTON | WS_TABSTOP, 290, 762, 66, 30, kApply, g_ui_font);
+  Add(hwnd, L"BUTTON", L"\u786e\u5b9a",
+      BS_DEFPUSHBUTTON | WS_TABSTOP, 364, 762, 66, 30, kConfirm, g_ui_font);
+  Add(hwnd, L"BUTTON", L"\u53d6\u6d88",
+      BS_PUSHBUTTON | WS_TABSTOP, 438, 762, 66, 30, kCancel, g_ui_font);
 }
 
 bool Save(HWND hwnd) {
@@ -432,8 +454,12 @@ bool Save(HWND hwnd) {
     return true;
   }
   MessageBoxW(hwnd,
-              L"设置没能写进文件。可能是杀毒软件拦了，或者这个文件被设成了只读。\n"
-              L"点「打开设置文件」看看能不能手工改。",
+              L"\u8bbe\u7f6e\u6ca1\u80fd\u5199\u8fdb\u6587\u4ef6\u3002"
+              L"\u53ef\u80fd\u662f\u6740\u6bd2\u8f6f\u4ef6\u62e6\u4e86"
+              L"\uff0c\u6216\u8005\u8fd9\u4e2a\u6587\u4ef6\u88ab\u8bbe\u6210"
+              L"\u4e86\u53ea\u8bfb\u3002\n"
+              L"\u70b9\u300c\u6253\u5f00\u8bbe\u7f6e\u6587\u4ef6\u300d"
+              L"\u770b\u770b\u80fd\u4e0d\u80fd\u624b\u5de5\u6539\u3002",
               kTitle, MB_OK | MB_ICONWARNING);
   return false;
 }
@@ -447,25 +473,21 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam,
       return 0;
 
     case WM_SIZE: {
-      // 屏幕矮的时候窗口装不下全部内容 —— 1366×768 上客户区最多 728 像素，
-      // 而内容要 736，125% 缩放下要 920。以前窗口硬开 736，下面那一排
-      // 「确定／取消」就掉到屏幕外面，用户按不到。现在靠滚动条把它推上来。
       if (!(GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_VSCROLL)) return 0;
       const int view = HIWORD(lparam);
       SCROLLINFO info = {};
       info.cbSize = sizeof(info);
-      info.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
-      info.nMin = 0;
-      info.nMax = g_content_px > 0 ? g_content_px - 1 : 0;
-      info.nPage = static_cast<UINT>(view > 0 ? view : 1);
-      info.nPos = g_scroll_pos;
+      info.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS;
+      info.nMin   = 0;
+      info.nMax   = g_content_px > 0 ? g_content_px - 1 : 0;
+      info.nPage  = static_cast<UINT>(view > 0 ? view : 1);
+      info.nPos   = g_scroll_pos;
       SetScrollInfo(hwnd, SB_VERT, &info, TRUE);
-      // 窗口被拉高之后原来的滚动量可能已经超界，得把内容跟着推回去，
-      // 否则底部会留一块空白而顶上的内容还在窗口外。
       const int limit = g_content_px > view ? g_content_px - view : 0;
       if (g_scroll_pos > limit) {
-        ScrollWindowEx(hwnd, 0, g_scroll_pos - limit, nullptr, nullptr, nullptr,
-                       nullptr, SW_SCROLLCHILDREN | SW_INVALIDATE | SW_ERASE);
+        ScrollWindowEx(hwnd, 0, g_scroll_pos - limit, nullptr, nullptr,
+                       nullptr, nullptr,
+                       SW_SCROLLCHILDREN | SW_INVALIDATE | SW_ERASE);
         g_scroll_pos = limit;
         SetScrollPos(hwnd, SB_VERT, g_scroll_pos, TRUE);
       }
@@ -476,42 +498,40 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam,
       if (!(GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_VSCROLL)) return 0;
       SCROLLINFO info = {};
       info.cbSize = sizeof(info);
-      info.fMask = SIF_ALL;
+      info.fMask  = SIF_ALL;
       if (!GetScrollInfo(hwnd, SB_VERT, &info)) return 0;
-      const int page = static_cast<int>(info.nPage);
+      const int page  = static_cast<int>(info.nPage);
       const int limit = info.nMax + 1 > page ? info.nMax + 1 - page : 0;
       int want = g_scroll_pos;
       switch (LOWORD(wparam)) {
-        case SB_TOP: want = 0; break;
-        case SB_BOTTOM: want = limit; break;
-        case SB_LINEUP: want -= S(28); break;
+        case SB_TOP:      want = 0;     break;
+        case SB_BOTTOM:   want = limit; break;
+        case SB_LINEUP:   want -= S(28); break;
         case SB_LINEDOWN: want += S(28); break;
-        case SB_PAGEUP: want -= page; break;
-        case SB_PAGEDOWN: want += page; break;
+        case SB_PAGEUP:   want -= page;  break;
+        case SB_PAGEDOWN: want += page;  break;
         case SB_THUMBTRACK:
         case SB_THUMBPOSITION: want = info.nTrackPos; break;
         default: return 0;
       }
-      if (want < 0) want = 0;
+      if (want < 0)     want = 0;
       if (want > limit) want = limit;
       if (want == g_scroll_pos) return 0;
-      ScrollWindowEx(hwnd, 0, g_scroll_pos - want, nullptr, nullptr, nullptr,
-                     nullptr, SW_SCROLLCHILDREN | SW_INVALIDATE | SW_ERASE);
+      ScrollWindowEx(hwnd, 0, g_scroll_pos - want, nullptr, nullptr,
+                     nullptr, nullptr,
+                     SW_SCROLLCHILDREN | SW_INVALIDATE | SW_ERASE);
       g_scroll_pos = want;
       SetScrollPos(hwnd, SB_VERT, g_scroll_pos, TRUE);
       return 0;
     }
 
     case WM_MOUSEWHEEL: {
-      // 有滚动条就该能用滚轮，不然用户会以为窗口卡住了。没滚动条就别管。
       if (!(GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_VSCROLL)) break;
       const int notches = GET_WHEEL_DELTA_WPARAM(wparam) / WHEEL_DELTA;
-      for (int i = 0; i < notches; ++i) {
-        SendMessageW(hwnd, WM_VSCROLL, SB_LINEUP, 0);
-      }
-      for (int i = 0; i > notches; --i) {
-        SendMessageW(hwnd, WM_VSCROLL, SB_LINEDOWN, 0);
-      }
+      for (int i = 0; i < notches;  ++i)
+        SendMessageW(hwnd, WM_VSCROLL, SB_LINEUP,   0);
+      for (int i = 0; i > notches;  --i)
+        SendMessageW(hwnd, WM_VSCROLL, SB_LINEDOWN,  0);
       return 0;
     }
 
@@ -520,8 +540,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam,
           reinterpret_cast<const DRAWITEMSTRUCT*>(lparam);
       switch (item->CtlID) {
         case kPreview:
-          DrawPreview(item);
-          return TRUE;
+          DrawPreview(item); return TRUE;
         case kBackgroundColor:
           DrawSwatch(item,
                      Resolve(g_look.system_background, g_look.background,
@@ -539,19 +558,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam,
                      !g_look.system_dim);
           return TRUE;
         case kHighlightBg:
-          DrawSwatch(item, g_look.highlight_bg, true);
-          return TRUE;
+          DrawSwatch(item, g_look.highlight_bg, true); return TRUE;
         case kHighlightFg:
-          DrawSwatch(item, g_look.highlight_fg, true);
-          return TRUE;
-        default:
-          break;
+          DrawSwatch(item, g_look.highlight_fg, true); return TRUE;
+        default: break;
       }
       break;
     }
 
     case WM_COMMAND: {
-      const int id = LOWORD(wparam);
+      const int id   = LOWORD(wparam);
       const int code = HIWORD(wparam);
       switch (id) {
         case kFontPick:
@@ -597,6 +613,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam,
           PullLookFromControls(hwnd);
           PushLookToControls(hwnd);
           return 0;
+        case kShowPartsWindow:
+          PullLookFromControls(hwnd);
+          return 0;
         case kRowHeight:
         case kPadding:
         case kMinWidth:
@@ -613,17 +632,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam,
           PushLookToControls(hwnd);
           return 0;
         case kOpenFile: {
-          // 先落盘再打开，否则记事本里看到的是改之前的内容。
           Save(hwnd);
           const std::wstring path = zuxia::SettingsFilePath();
-          ShellExecuteW(hwnd, L"open", L"notepad.exe", path.c_str(), nullptr,
-                        SW_SHOWNORMAL);
-          // 文件从这一刻起可能被用户在记事本里手改。再拿启动时的快照去
-          // 「取消回写」就会把手改整份盖掉，用户根本不知道发生了什么。
-          // 交出去之后就不再声称知道文件里是什么：基线对齐到刚写的值，
-          // 并撤掉回写标志。之后按取消只是「界面上的改动不生效」。
+          ShellExecuteW(hwnd, L"open", L"notepad.exe", path.c_str(),
+                        nullptr, SW_SHOWNORMAL);
           g_original = g_look;
-          g_applied = false;
+          g_applied  = false;
           return 0;
         }
         case kApply:
@@ -635,13 +649,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam,
           return 0;
         case IDCANCEL:
         case kCancel:
-          // 按过「应用」就已经写进文件了，取消得把原样写回去 —— 不然
-          // 「取消」等于「保留」，那是骗人。
           if (g_applied) zuxia::SaveAppearance(g_original);
           DestroyWindow(hwnd);
           return 0;
-        default:
-          break;
+        default: break;
       }
       break;
     }
@@ -655,8 +666,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam,
       PostQuitMessage(0);
       return 0;
 
-    default:
-      break;
+    default: break;
   }
   return DefWindowProcW(hwnd, message, wparam, lparam);
 }
@@ -664,13 +674,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam,
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
-  // 把按名解析的 DLL 搜索顺序收紧到「本模块目录 + System32」，去掉当前工作
-  // 目录和 PATH。这件事只能在自己的进程里做：文本服务那边是被加载进别人
-  // 进程的，改进程级搜索策略会改掉宿主的行为，不是我们该做的事。
   SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
 
-  // 已经开着一个就把它拎到前面来，不要开第二个 —— 两个窗口各写各的文件，
-  // 后保存的那个会把前一个的改动盖掉。
   HANDLE once = CreateMutexW(nullptr, TRUE, L"Local\\ZuxiaSettingsSingleton");
   if (once && GetLastError() == ERROR_ALREADY_EXISTS) {
     HWND existing = FindWindowW(kClassName, nullptr);
@@ -692,72 +697,67 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   }
   if (g_dpi <= 0) g_dpi = 96;
 
-  g_ui_font = CreateFontW(-MulDiv(10, g_dpi, 72), 0, 0, 0, FW_NORMAL, FALSE,
-                          FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                          CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                          DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
-  g_section_font = CreateFontW(-MulDiv(11, g_dpi, 72), 0, 0, 0, FW_SEMIBOLD,
-                               FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                               OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                               CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-                               L"Microsoft YaHei UI");
+  g_ui_font = CreateFontW(
+      -MulDiv(10, g_dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+      CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+      L"Microsoft YaHei UI");
+  g_section_font = CreateFontW(
+      -MulDiv(11, g_dpi, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+      CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+      L"Microsoft YaHei UI");
 
-  g_look = zuxia::LoadAppearance();
+  g_look     = zuxia::LoadAppearance();
   g_original = g_look;
 
   WNDCLASSEXW wc = {};
-  wc.cbSize = sizeof(wc);
-  wc.lpfnWndProc = WindowProc;
-  wc.hInstance = instance;
-  wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+  wc.cbSize        = sizeof(wc);
+  wc.lpfnWndProc   = WindowProc;
+  wc.hInstance     = instance;
+  wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
   wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
   wc.lpszClassName = kClassName;
-  wc.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(1));
-  wc.hIconSm = wc.hIcon;
+  wc.hIcon         = LoadIconW(instance, MAKEINTRESOURCEW(1));
+  wc.hIconSm       = wc.hIcon;
   if (!RegisterClassExW(&wc)) return 1;
 
-  // 内容高度在 WM_CREATE／WM_SIZE 之前就得定下来 —— CreateWindowExW 还没
-  // 返回，那两条消息已经发出去了。
   g_content_px = S(kContentHeight);
   g_scroll_pos = 0;
 
   RECT work = {0, 0, 0, 0};
   if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
-    work.left = 0;
-    work.top = 0;
-    work.right = GetSystemMetrics(SM_CXSCREEN);
+    work.left = 0; work.top = 0;
+    work.right  = GetSystemMetrics(SM_CXSCREEN);
     work.bottom = GetSystemMetrics(SM_CYSCREEN);
   }
-  const int work_w = work.right - work.left;
+  const int work_w = work.right  - work.left;
   const int work_h = work.bottom - work.top;
 
-  DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
-  int client_h = g_content_px;
-  int client_w = S(kContentWidth);
+  DWORD style    = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
+  int client_h   = g_content_px;
+  int client_w   = S(kContentWidth);
 
   RECT probe = {0, 0, client_w, client_h};
   AdjustWindowRect(&probe, style, FALSE);
   const int chrome_h = (probe.bottom - probe.top) - client_h;
   if (work_h > 0 && (probe.bottom - probe.top) > work_h) {
-    // 装不下。客户区压到工作区放得下的高度，剩下的交给滚动条，
-    // 再把滚动条自己占掉的宽度补上（AdjustWindowRect 不管它）。
     client_h = work_h - chrome_h;
     const int floor_h = S(280);
     if (client_h < floor_h) client_h = floor_h;
-    style |= WS_VSCROLL;
+    style  |= WS_VSCROLL;
     client_w += GetSystemMetrics(SM_CXVSCROLL);
   }
 
   RECT want = {0, 0, client_w, client_h};
   AdjustWindowRect(&want, style, FALSE);
-  const int window_w = want.right - want.left;
+  const int window_w = want.right  - want.left;
   const int window_h = want.bottom - want.top;
-  // 自己居中，别用 CW_USEDEFAULT —— 那个会把窗口放在工作区里偏下的位置，
-  // 高度刚好等于工作区时底边还是会露到屏幕外。
   int x = work.left + (work_w > window_w ? (work_w - window_w) / 2 : 0);
-  int y = work.top + (work_h > window_h ? (work_h - window_h) / 2 : 0);
-  g_main = CreateWindowExW(0, kClassName, kTitle, style, x, y, window_w,
-                           window_h, nullptr, nullptr, instance, nullptr);
+  int y = work.top  + (work_h > window_h ? (work_h - window_h) / 2 : 0);
+  g_main = CreateWindowExW(0, kClassName, kTitle, style,
+                           x, y, window_w, window_h,
+                           nullptr, nullptr, instance, nullptr);
   if (!g_main) return 1;
   ShowWindow(g_main, show);
   UpdateWindow(g_main);
@@ -768,7 +768,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     TranslateMessage(&message);
     DispatchMessageW(&message);
   }
-  if (g_ui_font) DeleteObject(g_ui_font);
+  if (g_ui_font)     DeleteObject(g_ui_font);
   if (g_section_font) DeleteObject(g_section_font);
   if (once) CloseHandle(once);
   return 0;
