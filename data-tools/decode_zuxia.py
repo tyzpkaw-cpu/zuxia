@@ -392,6 +392,7 @@ SELFTEST = [
     ("yangzhipengzszmsp", "杨志鹏"),      # 三字，人名，词库里没有
     ("yangzhipengzszmspyxn", "杨志鹏"),
     ("xuancibz", "选词"),      # 「码打得满」压过「字多」：选词 > 选此
+    ("henmazzrm", "很吗"),     # 0.3.0 码表扩充后整串匹配，不再有尾巴
 ]
 
 # 死码兜底：整串拼不出来时退到最长有效前缀，尾巴要如实报出来。
@@ -400,7 +401,8 @@ FALLBACK_SELFTEST = [
     # 「下」有了 xiadh，整串码解得通了，不再是死码。换成 zuxiasdkq ——
     # 下的部件只有 一(横/一) 和 卜，没有 q 打头的，所以尾巴是 q。
     ("zuxiasdkq", "足下", "q"),
-    ("henmazzrm", "很吗", "rm"),
+    # 0.3.0 码表扩充后 henmazzrm 整串匹配（很吗等），不再有尾巴；
+    # 已移至 SELFTEST。
     ("qqqqq", None, ""),       # 怎么退都拼不出来，就该老实交白卷
 ]
 
