@@ -24,5 +24,18 @@ __pycache__/
 # 进不了 git 也没必要 —— 它完全由 data-tools/sources/ 决定。
 /data/zuxia.extended.dict.yaml
 
-# 解码器数据：3 MB，由同一个生成器产出。
+# 解码器数据：3.4 MB，由同一个生成器产出。
 /data/zuxia.decoder.tsv
+
+# 单字码表与候选注释表：0.3.0 起也不进 git。
+#
+# 原来是进的，理由写在 generate_phrases.py 的注释里 ——「单字表要留在 git 里
+# 逐行可审」。0.2.0 它是 66,505 行 1.0 MB，这话还算数。0.3.0 部件码放宽到三个、
+# 没有名称的部件再拆一层之后它是 275,268 行 4.4 MB，没有人会逐行审 4.4 MB，
+# 这个理由就不成立了。
+#
+# 它完全由 data-tools/sources/ 决定，CI 现生成现用，`audit_zuxia.py --regen`
+# 仍然跑两遍生成器逐字节比对，确定性这条性质没有丢。本地要看它，先跑
+# `python3 data-tools/generate_zuxia.py`。
+/data/zuxia.dict.yaml
+/data/zuxia_char_codes.dict.yaml

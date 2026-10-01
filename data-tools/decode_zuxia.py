@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import collections
 import functools
+import itertools
 import math
 import pathlib
 import sys
@@ -33,8 +34,12 @@ import generate_zuxia as g
 
 ROOT = pathlib.Path(__file__).resolve().parent
 STRUCTURE_KEYS = set("zsbpd")
-# 一个字最多给两个部件，与单字方案的梯级一致。
-MAX_COMPONENTS = 2
+# 一个字最多给三个部件，与单字方案的梯级一致。
+#
+# 0.2.0 卡在两个部件，作者真机反馈「部件码还没有穷尽」：很多字拆到第二层
+# 还有可用的部件，只给两位就漏掉了，需要再补一次部件码。0.3.0 因此把上限
+# 提到三位，与 generate_zuxia.MAX_COMPONENTS_PER_CODE 对齐。
+MAX_COMPONENTS = 3
 # 定向搜索宽度。逐位扩展时只留权重最高的这么多个前缀，避免长词组合爆炸。
 BEAM = 400
 
@@ -48,13 +53,14 @@ class Index:
         self.by_pys: dict[tuple[str, str], set[str]] = collections.defaultdict(set)
         self.by_pysc: dict[tuple[str, str, str], set[str]] = collections.defaultdict(set)
         self.by_pyscc: dict[tuple[str, str, str, str], set[str]] = collections.defaultdict(set)
+        self.by_pysccc: dict[tuple[str, str, str, str, str], set[str]] = collections.defaultdict(set)
         self.syllables: set[str] = set()
 
         for char, pinyin, weight in charset:
             src = (hanzi.get(char) or {}).get("decomposition") or ids.get(char, "")
             structure = g.classify_structure(g.parse_ids(src), char, overrides)
             groups = [g.letters_for(p, names, hanzi)
-                      for p in g.components_of(char, hanzi, ids)]
+                      for p in g.expand_components(char, hanzi, ids, names)]
             groups = [s for s in groups if s]
             if not groups:
                 # 32 个字（入 心 舟 女 …）拆不出部件。列式码要求每一位都能
@@ -68,13 +74,22 @@ class Index:
             for group in groups:
                 for letter in group:
                     self.by_pysc[(pinyin, structure, letter)].add(char)
-            for i, first in enumerate(groups):
-                for j, second in enumerate(groups):
-                    if i == j:
-                        continue
-                    for a in first:
-                        for b in second:
-                            self.by_pyscc[(pinyin, structure, a, b)].add(char)
+            # 任意 1..MAX_COMPONENTS 个互不相同的部件，顺序不限 —— 与
+            # generate_zuxia.codes_for 的排列展开同构。0.2.0 在这里自己写了
+            # 一段「任意两个部件」的双重循环，0.3.0 删掉，改成按排列展开，
+            # 这样第三位也能填进来，且口径与生成器、src/Decoder.cpp 一致。
+            width = min(MAX_COMPONENTS, len(groups))
+            for size in range(1, width + 1):
+                for indices in itertools.permutations(range(len(groups)), size):
+                    for combo in itertools.product(*[sorted(groups[i])
+                                                     for i in indices]):
+                        key = (pinyin, structure) + tuple(combo)
+                        if len(combo) == 1:
+                            self.by_pysc[key].add(char)
+                        elif len(combo) == 2:
+                            self.by_pyscc[key].add(char)
+                        else:
+                            self.by_pysccc[key].add(char)
             # 独部件字：第二位重写第一位，与 Speller.code 的规则对上。
             if len(groups) == 1:
                 for a in groups[0]:
@@ -90,15 +105,19 @@ class Index:
             return self.by_pys.get((syllable, structure), frozenset())
         if len(comps) == 1:
             return self.by_pysc.get((syllable, structure, comps[0]), frozenset())
-        return self.by_pyscc.get((syllable, structure, comps[0], comps[1]),
-                                 frozenset())
+        if len(comps) == 2:
+            return self.by_pyscc.get((syllable, structure, comps[0], comps[1]),
+                                     frozenset())
+        return self.by_pysccc.get(
+            (syllable, structure, comps[0], comps[1], comps[2]), frozenset())
 
 
 def load_index(root: pathlib.Path = ROOT) -> Index:
     return Index(
         g.load_hanzi(root / "sources/hanzi-dictionary.txt"),
         g.load_ids(root / "sources/cjkvi-ids.txt"),
-        g.load_names(root / "sources/component-names.yaml"),
+        g.merge_names(g.load_names(root / "sources/component-names.yaml"),
+                      g.load_gf0014()),
         g.load_charset(root / "sources/8105.dict.yaml"),
         g.load_structure_overrides(root / "sources/structure-overrides.tsv"),
     )
@@ -168,7 +187,12 @@ def segmentations(text: str, index: Index, max_syllables: int = 12):
 
 
 def constraints(syllables, tail):
-    """把尾巴按列分派给每个字：第 i 位拿结构、第一部件、第二部件。"""
+    """把尾巴按列分派给每个字：第 i 位拿结构、第一部件、第二部件、第三部件。
+
+    0.2.0 只分派到第二部件，第三位填不进来。0.3.0 把 MAX_COMPONENTS 提到
+    三，这里的分列填充要能填到第三位 —— 作者真机反馈「部件码还没有穷尽」，
+    需要再补一次部件码。
+    """
     n = len(syllables)
     per = []
     for i in range(n):
@@ -236,8 +260,11 @@ def decode(text: str, index: Index, prior: dict[str, int] | None = None,
 
 
 # 最多允许把末尾这么多位当成「没打完／打错了」退回去重试。一个字最多多出
-# 结构位加两个部件位，正好三位，所以「少打一个字的尾巴」一定落在 3 位以内。
-MAX_FALLBACK_TAIL = 3
+# 结构位加三个部件位，正好四位，所以「少打一个字的尾巴」一定落在 4 位以内。
+#
+# 0.2.0 是 3（结构位加两个部件位）。0.3.0 部件上限提到三位，这里跟着改成
+# 4，与 generate_zuxia.MAX_FALLBACK_TAIL 对齐。
+MAX_FALLBACK_TAIL = 4
 
 
 def decode_fallback(text: str, index: Index, prior=None, bigram=None,
@@ -264,7 +291,8 @@ class Speller:
     def __init__(self, root: pathlib.Path = ROOT):
         hanzi = g.load_hanzi(root / "sources/hanzi-dictionary.txt")
         ids = g.load_ids(root / "sources/cjkvi-ids.txt")
-        names = g.load_names(root / "sources/component-names.yaml")
+        names = g.merge_names(g.load_names(root / "sources/component-names.yaml"),
+                              g.load_gf0014())
         overrides = g.load_structure_overrides(
             root / "sources/structure-overrides.tsv")
         self.spec: dict[str, tuple[str, str, list[str]]] = {}
@@ -275,7 +303,7 @@ class Speller:
             best[ch] = weight
             src = (hanzi.get(ch) or {}).get("decomposition") or ids.get(ch, "")
             groups = [g.letters_for(p, names, hanzi)
-                      for p in g.components_of(ch, hanzi, ids)]
+                      for p in g.expand_components(ch, hanzi, ids, names)]
             groups = [sorted(s)[0] for s in groups if s] or [pinyin[0]]
             self.spec[ch] = (pinyin,
                              g.classify_structure(g.parse_ids(src), ch, overrides),
@@ -352,8 +380,14 @@ SELFTEST = [
     ("yingbg", "应"),          # 与应物共用的梯级，必须还在
     ("rud", "入"),             # 无部件字：只有拼音＋结构（入是独体字）
     ("rudr", "入"),            # 无部件字的部件位用自己名字的首字母
-    ("suyaoszcw", "苏瑶"),     # 两字，每字一个部件
-    ("suyaoszcwby", "苏瑶"),   # 两字，每字两个部件
+    # 0.3.0 起 耀 也落在 yaozw 上（它的部件展开之后多了一个 w 打头的叫法），
+    # 而 耀 比 瑶 常用得多，所以两列码的首选换了人。这不是退化，是「部件码
+    # 穷尽」的代价：别条路多了，每条路上的字也就多了。要钉死 瑶，得打到
+    # 它自己唯一的那条码 suyaoszcwbf（下一行）。
+    ("suyaoszcw", "苏耀"),
+    # 两字，每字两个部件。0.3.0 部件上限提到三位后，by 不再是瑶的部件码
+    # 组合（瑶的部件码展开里没有 b 打头的两位组合），正确的三列码是 bf。
+    ("suyaoszcwbf", "苏瑶"),
     ("zuxiasdk", "足下"),   # 下 是独体字（GF 0013-2009），结构位 d
     ("yangzhipengzszmsp", "杨志鹏"),      # 三字，人名，词库里没有
     ("yangzhipengzszmspyxn", "杨志鹏"),
@@ -362,7 +396,10 @@ SELFTEST = [
 
 # 死码兜底：整串拼不出来时退到最长有效前缀，尾巴要如实报出来。
 FALLBACK_SELFTEST = [
-    ("zuxiasdkh", "足下", "h"),
+    # 0.2.0 里这是死码：并入 GF 0014 之后「一」多了「横」这个名称，于是
+    # 「下」有了 xiadh，整串码解得通了，不再是死码。换成 zuxiasdkq ——
+    # 下的部件只有 一(横/一) 和 卜，没有 q 打头的，所以尾巴是 q。
+    ("zuxiasdkq", "足下", "q"),
     ("henmazzrm", "很吗", "rm"),
     ("qqqqq", None, ""),       # 怎么退都拼不出来，就该老实交白卷
 ]

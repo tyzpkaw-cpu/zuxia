@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import filecmp
+import itertools
 import pathlib
 import re
 import unicodedata
@@ -26,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 
+MAX_COMPONENTS = 3  # 与 generate_zuxia.MAX_COMPONENTS_PER_CODE 同步
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
@@ -139,13 +141,18 @@ def audit_dictionary(path: pathlib.Path, structured: bool) -> None:
                 stem_bad.append((ch, root, "一个读音下出现多个结构码"))
             stems_seen += 1
             suffixes = {t[depth:] for t in tails if len(t) >= depth}
-            if any(len(s) > 2 for s in suffixes):
+            if any(len(s) > MAX_COMPONENTS for s in suffixes):
                 long_bad.append((ch, root))
             for s in suffixes:
-                if len(s) == 2:
-                    if s[::-1] not in suffixes:
+                if len(s) >= 2:
+                    # 顺序不限：k 个部件的 k! 种顺序必须全在。
+                    if any("".join(x) not in suffixes
+                           for x in itertools.permutations(s)):
                         pair_bad.append((ch, root, s))
-                    if s[0] not in suffixes or s[1] not in suffixes:
+                    # 逐级可停：去掉任意一位之后的短码也必须在，
+                    # 否则使用者打到一半就没有候选了。
+                    if any(s[:i] + s[i + 1:] not in suffixes
+                           for i in range(len(s))):
                         single_bad.append((ch, root, s))
             if structured:
                 letters |= {t[:1] for t in tails if t}
@@ -156,9 +163,11 @@ def audit_dictionary(path: pathlib.Path, structured: bool) -> None:
           f"{len(stem_bad)} 处，例如 {stem_bad[:5]}")
     check("词典里没有字表之外的字", not orphan,
           f"{len(orphan)} 个，例如 {orphan[:5]}")
-    check("满码不超过「词干＋两位」", not long_bad, f"例如 {long_bad[:5]}")
-    check("两部件码的两种顺序都在", not pair_bad, f"例如 {pair_bad[:5]}")
-    check("每个两部件码的单部件中间级都在", not single_bad, f"例如 {single_bad[:5]}")
+    check(f"满码不超过「词干＋{MAX_COMPONENTS}位」", not long_bad,
+          f"例如 {long_bad[:5]}")
+    check("多部件码的每一种顺序都在", not pair_bad, f"例如 {pair_bad[:5]}")
+    check("多部件码去掉任意一位之后仍然是有效码", not single_bad,
+          f"例如 {single_bad[:5]}")
     if structured:
         check("同一个字的所有读音共用同一个结构码", not struct_bad,
               f"例如 {struct_bad[:5]}")
@@ -180,6 +189,60 @@ def audit_char_codes(by_char: dict[str, set[str]], path: pathlib.Path) -> None:
     check("注释表里的每个码都在主词典里", not missing, f"例如 {missing[:5]}")
     check("注释表只收满码（没有别的码以它为前缀）", not not_maximal,
           f"例如 {not_maximal[:5]}")
+
+
+def _generator():
+    """按需加载生成器模块；断言要用它的源数据和它的算法。"""
+    sys.path.insert(0, str(ROOT / "data-tools"))
+    import generate_zuxia as gen
+    return gen
+
+
+def audit_backward_compatible(by_char: dict[str, set[str]]) -> None:
+    """0.2.0 的每一条码在新表里都还在。
+
+    这条断言是作者定的硬要求的机械化：部件码从「最多两个」放宽到「最多三个」、
+    并且把没有名称的部件再拆一层之后，已经被记住的码一条都不许失效。
+    不存快照文件，而是现场用 0.2.0 的算法（只取顶层部件、只认人工名称表、
+    最多两位）重算一遍 —— 快照会过期，算法不会。
+    """
+    print("\n与 0.2.0 的向后兼容")
+    gen = _generator()
+    src = ROOT / "data-tools"
+    hanzi = gen.load_hanzi(src / "sources/hanzi-dictionary.txt")
+    ids = gen.load_ids(src / "sources/cjkvi-ids.txt")
+    curated = gen.load_names(src / "sources/component-names.yaml")
+    charset = gen.load_charset(src / "sources/8105.dict.yaml")
+    overrides = gen.load_structure_overrides(
+        src / "sources/structure-overrides.tsv")
+    missing = []
+    total = 0
+    for ch, pinyin, _weight in charset:
+        text = (hanzi.get(ch) or {}).get("decomposition") or ids.get(ch, "")
+        structure = gen.classify_structure(gen.parse_ids(text), ch, overrides)
+        parts = gen.components_of(ch, hanzi, ids)
+        usable = [p for p in parts if gen.letters_for(p, curated, hanzi)]
+        old = gen.codes_for(pinyin, structure, usable, curated, hanzi, True, 2)
+        total += len(old)
+        have = by_char.get(ch, ())
+        missing.extend((ch, code) for code in old if code not in have)
+    check(f"0.2.0 的 {total} 条码在新表里一条都没丢", not missing,
+          f"{len(missing)} 条，例如 {missing[:5]}")
+
+
+def audit_decoder_width() -> None:
+    """解码器和生成器必须认同「一个码最多几个部件」。
+
+    两边各写一个常量，错开就是一半的码 librime 认、解码器不认。
+    """
+    print("\n解码器与生成器的口径")
+    gen = _generator()
+    text = (ROOT / "src/Decoder.cpp").read_text(encoding="utf-8")
+    found = re.search(r"kMaxComponents\s*=\s*(\d+)", text)
+    value = int(found.group(1)) if found else -1
+    check("src/Decoder.cpp 的 kMaxComponents 与生成器一致",
+          value == gen.MAX_COMPONENTS_PER_CODE,
+          f"Decoder.cpp = {value}，生成器 = {gen.MAX_COMPONENTS_PER_CODE}")
 
 
 def audit_legacy(by_char: dict[str, set[str]]) -> None:
@@ -312,6 +375,8 @@ def main() -> int:
 
     by_char = audit_dictionary(ROOT / "data/zuxia.dict.yaml", args.structured)
     audit_char_codes(by_char, ROOT / "data/zuxia_char_codes.dict.yaml")
+    audit_backward_compatible(by_char)
+    audit_decoder_width()
     if args.structured:
         audit_legacy(by_char)
     audit_versions()

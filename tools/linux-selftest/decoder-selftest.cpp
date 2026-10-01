@@ -283,7 +283,7 @@ static void CheckRecall(zuxia::ColumnarDecoder* decoder) {
   // 别的码一点不受影响。
   const std::vector<std::wstring> other = decoder->Decode("suyaoszcw", 9);
   Assert("an unrelated code is untouched",
-         !other.empty() && Utf8(other[0]) == "\xe8\x8b\x8f\xe7\x91\xb6");
+         !other.empty() && Utf8(other[0]) == "\xe8\x8b\x8f\xe8\x80\x80");
 
   // 坏行跳过，不能连坐。
   FILE* f = std::fopen(path, "ab");
@@ -351,17 +351,20 @@ static void CheckRecall(zuxia::ColumnarDecoder* decoder) {
   std::remove(path);
   decoder->SetUserTable(wide);
   const char* kZuxia = "zuxiasdk";
-  const char* kDead = "zuxiasdkh";   // 多打了一个 h，靠兜底退回 zuxiasdk
+  // 0.3.0 之前这里用的是 zuxiasdkh。并入 GF 0014 之后 一 多了「横」这个
+  // 名称，于是 下 也有了 xiadh，整串码反倒解得通了，这个用例就不再是死码。
+  // 换成 q：下 的部件只有 一(h/y) 和 卜(b)，没有哪一个叫 q 打头的东西。
+  const char* kDead = "zuxiasdkq";   // 多打了一个 q，靠兜底退回 zuxiasdk
   const char* kZu = "\xe8\xb6\xb3\xe4\xb8\x8b";   // 足下
   std::string tail;
   words = decoder->Decode(kDead, 9, &tail);
   Assert("the dead code falls back and reports its tail",
-         !words.empty() && Utf8(words[0]) == kZu && tail == "h");
+         !words.empty() && Utf8(words[0]) == kZu && tail == "q");
   // 从兜底候选里选的是「前缀 -> 词」这一条，RimeEngine 就是这么记的。
   decoder->RecordChoice(kZuxia, Wide(kZu));
   words = decoder->Decode(kDead, 9, &tail);
   Assert("a pick learned on the prefix still leads on the dead code",
-         !words.empty() && Utf8(words[0]) == kZu && tail == "h");
+         !words.empty() && Utf8(words[0]) == kZu && tail == "q");
   bool dup = false;
   for (size_t i = 0; i < words.size(); ++i)
     for (size_t j = i + 1; j < words.size(); ++j)
@@ -382,7 +385,7 @@ static void CheckRecall(zuxia::ColumnarDecoder* decoder) {
   tail.clear();
   words = decoder->Decode(kDead, 9, &tail);
   Assert("a learned record on a dead code does not suppress the fallback",
-         tail == "h");
+         tail == "q");
   Assert("the fallback list is what a dead code yields",
          !words.empty() && Utf8(words[0]) == kZu);
   decoder->SetUserTable(std::wstring());
@@ -400,8 +403,12 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  Check("suyaoszcw", "\xe8\x8b\x8f\xe7\x91\xb6", 3, &decoder);          // 苏瑶
-  Check("suyaoszcwby", "\xe8\x8b\x8f\xe7\x91\xb6", 1, &decoder);        // 苏瑶
+  // 0.3.0 起 耀 也落在 yaozw 上（它的部件展开之后多了一个 w 打头的叫法），
+  // 而 耀 比 瑶 常用得多，所以两列码的首选换了人。这不是退化，是「部件码
+  // 穷尽」的代价：别条路多了，每条路上的人也就多了。要钉死 瑶，得打到
+  // 它自己唯一的那条码。
+  Check("suyaoszcw", "\xe8\x8b\x8f\xe8\x80\x80", 3, &decoder);          // 苏耀
+  Check("suyaoszcwbf", "\xe8\x8b\x8f\xe7\x91\xb6", 1, &decoder);       // 苏瑶（yaozfw 只有瑶）
   // 下 是独体字（GF 0013-2009），结构位是 d 不是 s。改对之后这一档只剩一个
   // 答案 —— 独体比上下窄得多 —— 所以这里要的是 1 不是 3。上一档还是满的。
   Check("zuxiasd", "\xe8\xb6\xb3\xe4\xb8\x8b", 3, &decoder);            // 足下
@@ -420,12 +427,12 @@ int main(int argc, char** argv) {
 
   std::printf("\nfallback to the longest valid prefix:\n");
   // 尾巴 h 没用上，交出去让输入法接着组字。
-  CheckFallback("zuxiasdkh", "\xe8\xb6\xb3\xe4\xb8\x8b", "h", &decoder);
+  CheckFallback("zuxiasdkq", "\xe8\xb6\xb3\xe4\xb8\x8b", "q", &decoder);
   CheckFallback("henmazzrm", "\xe5\xbe\x88\xe5\x90\x97", "rm", &decoder);
   // 退到底也拼不出来就老实交白卷，不能硬凑。
   CheckFallback("qqqqq", "", "", &decoder);
   // 整串本来就解得通的时候不许有尾巴 —— 有尾巴就等于凭空吃掉了几位码。
-  CheckFallback("suyaoszcw", "\xe8\x8b\x8f\xe7\x91\xb6", "", &decoder);
+  CheckFallback("suyaoszcw", "\xe8\x8b\x8f\xe8\x80\x80", "", &decoder);
 
   CheckRecall(&decoder);
 

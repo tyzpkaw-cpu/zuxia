@@ -110,6 +110,7 @@ void CCandidateWindow::Show() {
 
 void CCandidateWindow::Hide() {
   if (hwnd_) ShowWindow(hwnd_, SW_HIDE);
+  session_width_ = 0;  // 下一次组字从头量宽度
 }
 
 bool CCandidateWindow::Visible() const {
@@ -190,6 +191,9 @@ void CCandidateWindow::RecalculateSize() {
   }
 
   width_ = std::min(width_, Scale(look_.max_width));
+  // 只长不缩，直到这次组字结束。
+  width_ = std::max(width_, session_width_);
+  session_width_ = width_;
   if (old) SelectObject(dc, old);
   ReleaseDC(hwnd_, dc);
 }

@@ -143,7 +143,8 @@ Check '载荷里没有仓库里不存在的数据文件' ($extraData.Count -eq 0
 # 只有新代码才会有的宽字符串。把它变成断言，下次就不用靠人去翻。
 $markers = @('apply-failed', 'edit-session-refused', 'commit-failed',
              'end-composition-failed', 'composition-dropped',
-             'process-key-threw')
+             'process-key-threw',
+    'caps-lock-passthrough')
 foreach ($arch in @('x64', 'x86')) {
     $dll = Join-Path $Stage "$arch\ZuxiaTSF.dll"
     if (-not (Test-Path $dll)) { continue }

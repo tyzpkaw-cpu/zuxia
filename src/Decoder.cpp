@@ -13,7 +13,11 @@ namespace zuxia {
 namespace {
 
 // 一个字最多给两个部件，与单字方案的梯级一致。
-constexpr size_t kMaxComponents = 2;
+// 一个字最多带几个部件字母。0.2.0 是 2；作者实测反馈「部件码还没有穷尽」
+// 「需要再补一次部件码」，0.3.0 放宽到 3。
+// data-tools/generate_zuxia.py 的 MAX_COMPONENTS_PER_CODE 必须和它一致，
+// audit_zuxia.py 有一条断言盯着。
+constexpr size_t kMaxComponents = 3;
 // 一个词最多这么多字。再长的串切法数量会爆，而且也没人那么打。
 constexpr size_t kMaxSyllables = 12;
 // 定向搜索宽度。逐位扩展时只留权重最高的这么多个前缀。
@@ -345,10 +349,19 @@ const std::vector<char32_t>* ColumnarDecoder::Lookup(const Cell& cell) const {
   std::string code = cell.syllable;
   if (cell.structure) {
     code.push_back(cell.structure);
-    if (cell.first) {
-      code.push_back(cell.first);
-      if (cell.second) code.push_back(cell.second);
-    }
+    // 部件段排序之后再查。
+    //
+    // 「任意部件、顺序不限」意味着部件段是个多重集，不是序列 —— abc 和 cba
+    // 是同一个码。表里只存排好序的那一个代表（见 generate_phrases.py），
+    // 所以这里要先排。存排列的话 c 段是 2.66 MB，存组合只有 0.6 MB，而首次
+    // 按键要等的正是这个文件读完（实测 1.4–1.8 秒）。
+    char letters[kMaxComponents] = {0};
+    size_t count = 0;
+    if (cell.first) letters[count++] = cell.first;
+    if (cell.second) letters[count++] = cell.second;
+    if (cell.third) letters[count++] = cell.third;
+    std::sort(letters, letters + count);
+    code.append(letters, count);
   }
   const auto found = codes_.find(code);
   return found == codes_.end() ? nullptr : &found->second;
@@ -478,8 +491,10 @@ std::vector<std::wstring> ColumnarDecoder::Search(const std::string& raw,
         }
         if (level == 0) {
           cells[i].first = split.tail[at];
-        } else {
+        } else if (level == 1) {
           cells[i].second = split.tail[at];
+        } else {
+          cells[i].third = split.tail[at];
         }
       }
     }

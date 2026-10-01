@@ -16,7 +16,11 @@ struct Appearance {
   int font_size = 16;        // 逻辑像素，会按显示器 DPI 缩放
   int row_height = 30;
   int padding = 8;
-  int min_width = 220;
+  // 下限，不是固定宽度。0.2.0 默认 220 —— 九个单字候选的最长一行量出来远
+  // 不到 220，于是宽度始终卡在下限，作者实测反馈「键入窗口宽度不会自动变
+  // 化，疑似 bug」。算法没错，是下限设得太宽。降到 120 之后窗口才真的跟着
+  // 内容走。已经有设置文件的用户，文件里存的还是 220，要自己改这一行。
+  int min_width = 120;
   int max_width = 720;
   bool horizontal = false;   // 竖排一列 / 横排一行
 

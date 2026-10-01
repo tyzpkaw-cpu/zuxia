@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import sys
 import collections
+import itertools
 import json
 import pathlib
 import unicodedata
@@ -50,6 +51,50 @@ NOT_A_COMPONENT = set("？?[]{}()0123456789"
 # which is exactly where a typist learned to tell 独体 from 合体 in the first
 # place.  A structure key the typist cannot guess is worth nothing.
 SINGLE_PATH = pathlib.Path(__file__).resolve().parent / "sources/gf0013-duti.txt"
+
+# 部件名称的权威来源，和结构码用 GF 0013—2009 是同一个家族的标准。
+#
+# 0.2.0 的毛病：名称表查不到的部件，letters_for() 退回部件「自己的读音」。于是
+# 龺 取 g（gàn）、㐬 取 l（liú）、尃 取 f（fū）、帀 取 z（zā）。实测 1586 种顶层
+# 部件里有 1261 种没有名称，2365 字（28.90% 字数 / 34.46% 字频）整个字一个可猜
+# 部件都没有 —— 这些码没人猜得出来，也就没人打得出来。
+#
+# GF 0014—2009《现代常用字部件及部件名称规范》给出 441 组 514 个部件的官方名称
+# （宝盖、草字头、病字框、倒八、私字边……）。并入之后那 2365 字降到 72 字
+# （0.88% / 4.72%）。
+#
+# 并入方式是**追加**而不是覆盖，两层都重要：
+#   * 人工名称在前 —— sources/component-names.yaml 是逐条核过的，国标的通名
+#     （比如把 疒 叫「病字框」而人工叫「病」）不该把它顶掉。
+#   * 部件自己的读音保留在列表里 —— 否则 0.2.0 那些「不可猜但已经被记住」的码
+#     （朝 chaozg）就会消失。实测不保留会让 174 个字丢掉旧码。
+GF0014_PATH = (pathlib.Path(__file__).resolve().parent
+               / "sources/gf0014-components.txt")
+
+# 一个部件最多拆几层。
+#
+# 实测（乱序、最多三个部件、按字频加权看「打满后该字有没有只属于它的码」）：
+#   只拆一层  275,268 行 4.84 MB  打满无唯一码 1410 字 17.23% / 字频 12.43%
+#   拆两层    330,097 行 5.83 MB              1452 字 17.74% / 13.17%
+#   拆四层    332,558 行 5.87 MB              1458 字 17.82% / 13.19%
+# 拆得越深越大*而且*越不唯一：再往下拆出来的都是低信息量的笔画件，它们让不同的
+# 字长得更像。所以只拆一层。
+MAX_COMPONENT_DEPTH = 1
+
+# 一个码最多带几个部件字母。
+#
+# 0.2.0 是 2。作者实测反馈「目前对于汉字的部件码还没有穷尽」「需要再补一次部件
+# 码」，两条都成立。同口径实测：
+#   只拆一层 / 最多两个   114,801 行  打满无唯一码 2417 字 29.54% / 字频 24.39%
+#   只拆一层 / 最多三个   275,268 行              1410 字 17.23% / 字频 12.43%
+#   只拆一层 / 最多四个   （行数再 +40%，只多救 59 个字）
+# 注意第一行：**拆了层却不给第三个部件，按字频比 0.2.0 的 19.06% 还差**。递归把
+# 一个有辨识度的整体部件（览 l）换成辨识度更低的子部件（见 j），两个字母补不回
+# 来，高频字受害最重。所以这两件事必须同一次上线，缺一个就是倒退。
+#
+# 四个不做，是因为乱序的代价是排列数（n 个部件取 k 个有 n!/(n−k)! 种顺序），
+# 从三到四多花四万行只多救 59 个字。顺序不限是作者定的口径，不改。
+MAX_COMPONENTS_PER_CODE = 3
 
 # 〇 and 卍 are not in the standard because they are not really 汉字; 孓 is too
 # rare for it. All three decompose to nothing usable, so they are named here.
@@ -159,6 +204,55 @@ def load_names(path: pathlib.Path) -> dict[str, list[str]]:
             items = [v.strip() for v in value.strip("[]").split(",")]
             names[key] = [v for v in items if v]
     return names
+
+
+def load_gf0014(path: pathlib.Path = GF0014_PATH) -> dict[str, list[str]]:
+    """GF 0014—2009 现代常用字部件表：`部件 TAB 序号 TAB 组号 TAB 名称 TAB 例字`。
+
+    名称列用 `/` 分隔多个通行叫法（`釆/番字头`）。部件列写成 `{…}` 的那 30 条
+    没有 Unicode 码位，只能用 IDS 描述，生成器拿不到，跳过并计数。
+    """
+    out: dict[str, list[str]] = {}
+    skipped = 0
+    if not path.exists():
+        return out
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if raw.startswith("#") or not raw.strip():
+            continue
+        fields = raw.split("\t")
+        if len(fields) < 4:
+            continue
+        part, label = fields[0].strip(), fields[3].strip()
+        if not part or not label:
+            continue
+        if part.startswith("{"):
+            skipped += 1
+            continue
+        bucket = out.setdefault(part, [])
+        for name in label.split("/"):
+            name = name.strip()
+            if name and name not in bucket:
+                bucket.append(name)
+    if skipped:
+        print(f"GF 0014: skipped {skipped} components that have no code point",
+              file=sys.stderr)
+    return out
+
+
+def merge_names(curated: dict[str, list[str]],
+                standard: dict[str, list[str]]) -> dict[str, list[str]]:
+    """人工名称 + 国标名称 + 部件自身，按这个优先级合成一张名称表。
+
+    追加而不覆盖。部件自身留在列表里是为了让 0.2.0 的每一条码都还在 ——
+    `audit_zuxia.py` 有一条断言机械地盯着这件事。
+    """
+    out: dict[str, list[str]] = {k: list(v) for k, v in curated.items()}
+    for part, labels in standard.items():
+        bucket = out.setdefault(part, [part])
+        for label in labels:
+            if label not in bucket:
+                bucket.append(label)
+    return out
 
 
 def parse_ids(text: str):
@@ -274,6 +368,44 @@ def components_of(char: str, hanzi: dict, ids: dict) -> list[str]:
     return seen
 
 
+def expand_components(char: str, hanzi: dict, ids: dict, names: dict,
+                      depth: int = MAX_COMPONENT_DEPTH) -> list[str]:
+    """顶层部件，外加「没有名称的部件」再拆一层的结果。
+
+    0.2.0 只取 components_of()，也就是只拆一层，不往下走。后果是一整类部件
+    打不出来：傅 只有 亻 和 尃，拿不到 甫 和 寸；朝 只有 龺 和 月，拿不到 十
+    和 日；梳 只有 木 和 㐬。实测递归之后可用部件会变多的字有 3047 个
+    （37.24% 字数 / 13.33% 字频）。
+
+    停在「名称表里有名字的部件」—— 名称表就是停止条件，这也是为什么并入
+    GF 0014 必须先做：表越全，拆得越浅，码表越小而且越可猜。
+
+    顶层部件本身**一定保留**（哪怕它没有名字、字母是它自己的生僻读音），
+    否则 0.2.0 已经被记住的码会消失。
+    """
+    out: list[str] = []
+
+    def visit(part: str, level: int) -> None:
+        if part != char and part not in out:
+            out.append(part)
+        if level >= depth or part in names or part in SINGLE_STRUCTURE_OVERRIDES:
+            return
+        row = hanzi.get(part) or {}
+        text = row.get("decomposition") or ""
+        if not text or text == "？":
+            text = ids.get(part, "")
+        for child in text:
+            if child in BINARY_IDS or child in TERNARY_IDS:
+                continue
+            if child in NOT_A_COMPONENT or child == part:
+                continue
+            visit(child, level + 1)
+
+    for top in components_of(char, hanzi, ids):
+        visit(top, 0)
+    return out
+
+
 def letters_for(part: str, names: dict, hanzi: dict) -> set[str]:
     """Every letter this component may be typed as."""
     out: set[str] = set()
@@ -286,7 +418,8 @@ def letters_for(part: str, names: dict, hanzi: dict) -> set[str]:
     return {c for c in out if c.isalpha()}
 
 
-def codes_for(pinyin, structure, parts, names, hanzi, use_structure):
+def codes_for(pinyin, structure, parts, names, hanzi, use_structure,
+              max_components: int = MAX_COMPONENTS_PER_CODE):
     """The full ladder of codes, shortest first."""
     stem = pinyin + (structure if use_structure else "")
     ladder = {pinyin, stem}
@@ -294,18 +427,17 @@ def codes_for(pinyin, structure, parts, names, hanzi, use_structure):
     letter_sets = [letters_for(p, names, hanzi) for p in parts]
     letter_sets = [s for s in letter_sets if s]
 
-    for group in letter_sets:
-        for letter in group:
-            ladder.add(stem + letter)
-
-    # Any two distinct components, in either order.
-    for i, first in enumerate(letter_sets):
-        for j, second in enumerate(letter_sets):
-            if i == j:
-                continue
-            for a in first:
-                for b in second:
-                    ladder.add(stem + a + b)
+    # 任意 1..max_components 个**互不相同**的部件，顺序不限。
+    #
+    # 顺序不限是作者定的口径：一个人看着字说不出「哪个部件算第一个」，所以
+    # 不能要求他按某个顺序敲。代价是按排列数展开（n 个部件取 k 个有
+    # n!/(n−k)! 种顺序），这也正是 max_components 卡在 3 的原因。
+    width = min(max_components, len(letter_sets))
+    for size in range(1, width + 1):
+        for indices in itertools.permutations(range(len(letter_sets)), size):
+            for combo in itertools.product(*[sorted(letter_sets[i])
+                                             for i in indices]):
+                ladder.add(stem + "".join(combo))
     return ladder
 
 
@@ -331,11 +463,21 @@ def main() -> int:
                     default=root / "sources/8105.dict.yaml")
     ap.add_argument("--names", type=pathlib.Path,
                     default=root / "sources/component-names.yaml")
+    ap.add_argument("--gf0014", type=pathlib.Path, default=GF0014_PATH,
+                    help="GF 0014—2009 部件名称表")
+    ap.add_argument("--no-gf0014", dest="use_gf0014", action="store_false",
+                    help="不并入国标部件名称（对照构建用）")
+    ap.set_defaults(use_gf0014=True)
+    ap.add_argument("--max-components", type=int,
+                    default=MAX_COMPONENTS_PER_CODE,
+                    help="一个码最多带几个部件字母（对照构建用；出货值是 3）")
+    ap.add_argument("--component-depth", type=int, default=MAX_COMPONENT_DEPTH,
+                    help="没有名称的部件再拆几层（对照构建用；出货值是 1）")
     ap.add_argument("--structure-map", type=pathlib.Path,
                     default=root / "sources/structure-overrides.tsv",
                     help="authoritative 字→结构码 map (see sync_structure.py)")
     ap.add_argument("--out-dir", type=pathlib.Path, default=root.parent / "data")
-    ap.add_argument("--version", default="0.2.0")
+    ap.add_argument("--version", default="0.3.0")
     # The structure key sits between sound and form and is always present.
     #
     # Measured on this table, weighted by character frequency, per (code,
@@ -361,7 +503,9 @@ def main() -> int:
 
     hanzi = load_hanzi(args.hanzi_data)
     ids = load_ids(args.cjkvi_ids)
-    names = load_names(args.names)
+    curated = load_names(args.names)
+    standard = load_gf0014(args.gf0014) if args.use_gf0014 else {}
+    names = merge_names(curated, standard)
     charset = load_charset(args.charset)
     overrides = load_structure_overrides(args.structure_map)
 
@@ -380,10 +524,11 @@ def main() -> int:
         stats[f"structure_{structure}"] += 1
         structure_weight[structure] += weight
 
-        parts = components_of(char, hanzi, ids)
+        parts = expand_components(char, hanzi, ids, names,
+                                  args.component_depth)
         usable = [p for p in parts if letters_for(p, names, hanzi)]
         for p in parts:
-            if not letters_for(p, names, hanzi):
+            if p not in names:
                 unnamed[p] += 1
 
         if len(usable) >= 2:
@@ -394,7 +539,7 @@ def main() -> int:
             stats["no_component"] += 1
 
         codes = codes_for(pinyin, structure, usable, names, hanzi,
-                          args.structure)
+                          args.structure, args.max_components)
         per_char_codes.append(len(codes))
         for code in codes:
             key = (char, code)
@@ -427,6 +572,11 @@ def main() -> int:
         "no_component": stats["no_component"],
         "components_without_a_name": len(unnamed),
         "components_without_a_name_top": unnamed.most_common(20),
+        # 并入国标之前 1261 种部件没有名称；之后只剩下「拆到底仍然无名」的几种。
+        "gf0014_components_loaded": len(standard),
+        "curated_components": len(curated),
+        "max_components_per_code": args.max_components,
+        "component_depth": args.component_depth,
         "use_structure_key": args.structure,
         "structure_overrides_applied": len(
             {c for c, _, _ in charset} & set(overrides)),

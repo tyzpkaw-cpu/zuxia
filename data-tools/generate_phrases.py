@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import itertools
 import json
 import math
 import pathlib
@@ -86,7 +87,7 @@ def build_char_table(hanzi, ids, names, charset, overrides):
         source = (hanzi.get(char) or {}).get("decomposition") or ids.get(char, "")
         structure[char] = g.classify_structure(g.parse_ids(source), char, overrides)
         groups = [g.letters_for(p, names, hanzi)
-                  for p in g.components_of(char, hanzi, ids)]
+                  for p in g.expand_components(char, hanzi, ids, names)]
         groups = [s for s in groups if s]
         # 拆不出部件的 32 个字（入 心 舟 女 …）用自己拼音的首字母顶上，
         # 与单字码和解码器的补位规则一致。
@@ -116,7 +117,7 @@ def write_decoder_data(path, hanzi, ids, names, charset, overrides, rows,
         source = (hanzi.get(char) or {}).get("decomposition") or ids.get(char, "")
         st = g.classify_structure(g.parse_ids(source), char, overrides)
         groups = [g.letters_for(p, names, hanzi)
-                  for p in g.components_of(char, hanzi, ids)]
+                  for p in g.expand_components(char, hanzi, ids, names)]
         groups = [x for x in groups if x]
         if not groups:
             groups = [{pinyin[0]}]
@@ -125,16 +126,21 @@ def write_decoder_data(path, hanzi, ids, names, charset, overrides, rows,
         stem = pinyin + st
         codes[pinyin].add(char)
         codes[stem].add(char)
-        for group in groups:
-            for letter in group:
-                codes[stem + letter].add(char)
-        for i, a_set in enumerate(groups):
-            for j, b_set in enumerate(groups):
-                if i == j:
-                    continue
-                for a in a_set:
-                    for b in b_set:
-                        codes[stem + a + b].add(char)
+        # 和 data/zuxia.dict.yaml 同一套阶梯：任意 1..3 个互不相同的部件，
+        # 顺序不限 —— 但这里只存**排好序**的那一个代表。
+        #
+        # 顺序不限意味着一个码的部件段是个「多重集」而不是序列，所以把 6 种
+        # 顺序都存一遍纯粹是浪费。Rime 的表没办法省（table_translator 只会按
+        # 字面前缀查，不会帮我们排序），但这张表是 src/Decoder.cpp 自己读的，
+        # 它在 Lookup() 里把部件段排好再查，所以这里存组合就够。
+        # 实测：存排列 c 段 2.66 MB，存组合 c 段 0.6 MB，而首次按键要等的就是
+        # 这个文件读完（实测 1.4–1.8 秒）。
+        width = min(g.MAX_COMPONENTS_PER_CODE, len(groups))
+        for size in range(1, width + 1):
+            for indices in itertools.combinations(range(len(groups)), size):
+                for combo in itertools.product(*[sorted(groups[i])
+                                                 for i in indices]):
+                    codes[stem + "".join(sorted(combo))].add(char)
         if len(groups) == 1:
             for a in groups[0]:
                 codes[stem + a + a].add(char)
@@ -182,13 +188,13 @@ def main() -> int:
     # 就从几秒变成十几秒 —— 那正是 docs/工程排查.md 里记下的那个毛病。
     ap.add_argument("--limit", type=int, default=120000)
     ap.add_argument("--out-dir", type=pathlib.Path, default=root.parent / "data")
-    ap.add_argument("--version", default="0.2.0")
+    ap.add_argument("--version", default="0.3.0")
     ap.add_argument("--report", type=pathlib.Path)
     args = ap.parse_args()
 
     hanzi = g.load_hanzi(args.hanzi_data)
     ids = g.load_ids(args.cjkvi_ids)
-    names = g.load_names(args.names)
+    names = g.merge_names(g.load_names(args.names), g.load_gf0014())
     charset = g.load_charset(args.charset)
     overrides = g.load_structure_overrides(args.structure_map)
     structure, first = build_char_table(hanzi, ids, names, charset, overrides)

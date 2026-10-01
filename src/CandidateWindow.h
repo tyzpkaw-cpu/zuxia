@@ -57,5 +57,8 @@ class CCandidateWindow {
   std::vector<int> item_widths_;  // 横排时每个候选占的宽度
   int highlighted_ = 0;
   int width_ = 280;
+  // 同一次组字里的最大宽度。窗口跟着内容走，但只长不缩 —— 每按一个键都
+  // 重新量一次的话，候选换了宽度就跳一下，看着很晃。组字结束（Hide）清零。
+  int session_width_ = 0;
   int height_ = 48;
 };

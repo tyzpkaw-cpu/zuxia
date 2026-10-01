@@ -31,6 +31,11 @@ jobs:
 
       # 词组码表不进 git（42 万行 12 MB），这里生成一次当作冒烟测试：
       # 生成器炸了，下面那个 job 编出来的安装包会是个哑巴输入法。
+      - name: generate_zuxia.py（单字表 0.3.0 起不进 git）
+        run: |
+          python data-tools/generate_zuxia.py
+          python data-tools/generate_codes.py
+
       - name: generate_phrases.py
         run: |
           python data-tools/generate_phrases.py
@@ -42,8 +47,9 @@ jobs:
           assert rows > 300000, "词组码表行数不对"
           PY
 
-      # --regen 会重跑两次生成器并逐字节比对，同时验证仓库里的词典就是
-      # 当前源码的产物。码表被手改过、生成器不确定，这一步就会红。
+      # --regen 会重跑两次生成器并逐字节比对。0.3.0 起单字表不进 git，所以
+      # 这一步验的是「生成器是确定的」，不再是「仓库里那份就是源码的产物」——
+      # 后面这条已经由「仓库里根本没有那份」自动成立。
       - name: audit_zuxia.py --regen
         run: python data-tools/audit_zuxia.py --regen
 
@@ -83,7 +89,10 @@ jobs:
       # dist\Zuxia\，安装包就是从那里打的。
       - name: 生成词组码表
         shell: pwsh
-        run: python data-tools/generate_phrases.py
+        run: |
+          python data-tools/generate_zuxia.py
+          python data-tools/generate_codes.py
+          python data-tools/generate_phrases.py
 
       - name: 读出版本号
         id: ver

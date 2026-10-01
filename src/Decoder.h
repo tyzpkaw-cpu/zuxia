@@ -65,6 +65,7 @@ class ColumnarDecoder {
     char structure = 0;  // 0 表示这一位没给结构码
     char first = 0;      // 0 表示没给部件
     char second = 0;
+    char third = 0;
   };
 
   const std::vector<char32_t>* Lookup(const Cell& cell) const;

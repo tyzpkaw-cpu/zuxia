@@ -313,6 +313,24 @@ EngineSnapshot RimeEngine::ProcessKey(int keycode, int modifiers) {
       return out;
     }
   }
+  // 组字到一半按回车：放弃这次组字，什么都不落。
+  //
+  // librime 的 express_editor 默认把原始码串当文本提交（Rime 一系都这样，
+  // 理由是「敲进去的东西不该凭空消失」）。但足下的码不是英文：qingz 落进
+  // 文档是五个没人想要的字母，而且用户当时不一定会发现。作者实测反馈的
+  // 「揽月……部件码 ry 也会落入文本」就是这个行为，不是另一个毛病。
+  // 打英文走中/西切换（Shift 轻敲或语言栏那个按钮），不走回车这条偏路。
+  //
+  // 没有在组字时不拦：那个回车是用户要的换行，归应用程序。
+  if (keycode == kXkReturn && modifiers == 0) {
+    const EngineSnapshot before = ReadSnapshot(false);
+    if (before.composing || !before.preedit.empty() || !overlay_.empty()) {
+      Clear();
+      EngineSnapshot out;
+      out.handled = true;  // 这个回车被输入法吃掉，不往下传
+      return out;
+    }
+  }
   const bool handled = api_->process_key(session_, keycode, modifiers);
   EngineSnapshot out = ReadSnapshot(handled);
   FillDecodedCandidates(&out);
@@ -580,7 +598,7 @@ bool RimeEngine::InitializeRuntime(HMODULE module) {
   traits.user_data_dir = user_data_utf8_.c_str();
   traits.distribution_name = "Zuxia IME";
   traits.distribution_code_name = "zuxia";
-  traits.distribution_version = "0.2.0";
+  traits.distribution_version = "0.3.0";
   traits.app_name = "rime.zuxia";
   traits.min_log_level = 2;
   traits.log_dir = "";

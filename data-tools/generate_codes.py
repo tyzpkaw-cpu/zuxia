@@ -97,7 +97,7 @@ def main() -> int:
                         type=pathlib.Path)
     parser.add_argument("--output", default="data/zuxia_char_codes.dict.yaml",
                         type=pathlib.Path)
-    parser.add_argument("--version", default="0.2.0")
+    parser.add_argument("--version", default="0.3.0")
     args = parser.parse_args()
 
     if not args.source.exists():

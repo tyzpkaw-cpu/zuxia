@@ -83,6 +83,25 @@ BOOL CTextService::_IsKeyEaten(ITfContext* /*context*/, WPARAM key) try {
   // the application.
   if (ascii) return FALSE;
 
+  // Caps Lock 亮着、而且手上没有正在组的码：字母归应用程序，直接出大写英文。
+  //
+  // 这是微软拼音和搜狗的通行行为。0.2.0 完全没有这一条 —— 作者实测反馈
+  // 「点大写英文不会变英文，需要先变英文再转大写」。
+  // data/zuxia.schema.yaml 里的 ascii_composer.good_old_caps_lock 对足下不
+  // 生效：中/西切换是在这个文件里用 TF_MOD_ON_KEYUP 预留键做的，Caps Lock
+  // 根本不会作为按键交给 librime，那段配置只在直接拿 Rime 跑这份方案时有用。
+  //
+  // 正在组字时不改行为：组字中途按一下 Caps Lock 就把已经打进去的码甩掉，
+  // 那是另一种毛病。
+  if ((GetKeyState(VK_CAPITAL) & 1) != 0 && !_EngineComposing() &&
+      !_IsComposing()) {
+    static LONG caps_reported = 0;
+    if (InterlockedCompareExchange(&caps_reported, 1, 0) == 0) {
+      zuxia::LogEvent(L"caps-lock-passthrough", L"");
+    }
+    return FALSE;
+  }
+
   // Letters always begin or extend a Zuxia code. Shift is intentionally
   // ignored; codes are normalized to lowercase before reaching librime.
   if (key >= 'A' && key <= 'Z') return TRUE;
