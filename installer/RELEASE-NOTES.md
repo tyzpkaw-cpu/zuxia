@@ -1,6 +1,6 @@
 足下输入法 —— 试用版。给审核与试打字用，不是正式发布。
 
-## 0.3.0 改了什么
+## 0.4.1 改了什么
 
 这一版动了三件事，它们是一起上线的，拆开任何一件都会出问题。
 
@@ -27,7 +27,7 @@
 核对办法（PowerShell，整块复制粘贴）：
 
 ```
-Get-FileHash .\ZuxiaSetup-0.3.0.exe -Algorithm SHA256
+Get-FileHash .\ZuxiaSetup-0.4.1.exe -Algorithm SHA256
 ```
 
 把结果和这次发布里的 `ZuxiaSetup-*.exe.sha256` 比一下。

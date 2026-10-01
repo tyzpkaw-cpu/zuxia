@@ -598,7 +598,7 @@ bool RimeEngine::InitializeRuntime(HMODULE module) {
   traits.user_data_dir = user_data_utf8_.c_str();
   traits.distribution_name = "Zuxia IME";
   traits.distribution_code_name = "zuxia";
-  traits.distribution_version = "0.3.0";
+  traits.distribution_version = "0.4.1";
   traits.app_name = "rime.zuxia";
   traits.min_log_level = 2;
   traits.log_dir = "";

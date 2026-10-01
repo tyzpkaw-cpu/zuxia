@@ -11,7 +11,7 @@ STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMEN
 CAPTION "应物音形足下输入法 安装程序"
 FONT 9, "Microsoft YaHei UI", 400, 0, 0x86
 BEGIN
-    LTEXT           "应物音形足下输入法 0.3.0", IDC_HEAD, 14, 10, 272, 14
+    LTEXT           "应物音形足下输入法 0.4.1", IDC_HEAD, 14, 10, 272, 14
     LTEXT           "", IDC_DESC, 14, 28, 272, 44
     LTEXT           "安装位置", IDC_PATHLABEL, 14, 78, 272, 9
     LTEXT           "", IDC_PATH, 14, 89, 272, 14, SS_PATHELLIPSIS | SS_CENTERIMAGE | WS_BORDER
