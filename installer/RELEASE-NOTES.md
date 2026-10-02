@@ -1,6 +1,8 @@
 足下输入法 —— 试用版。给审核与试打字用，不是正式发布。
 
-## 0.4.3 改了什么
+## 0.4.4 改了什么
+
+（0.4.3 漏改了两处版本号，发布前的自动检查没过，没出安装包，所以直接是 0.4.4。）
 
 只修一件事：**拆字窗拖不到另一块屏幕上。**
 
@@ -56,7 +58,7 @@
 核对办法（PowerShell，整块复制粘贴）：
 
 ```
-Get-FileHash .\ZuxiaSetup-0.4.3.exe -Algorithm SHA256
+Get-FileHash .\ZuxiaSetup-0.4.4.exe -Algorithm SHA256
 ```
 
 把结果和这次发布里的 `ZuxiaSetup-*.exe.sha256` 比一下。

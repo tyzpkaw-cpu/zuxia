@@ -16,7 +16,7 @@
 
 #define ZX_PRODUCT      L"应物音形足下输入法"
 #define ZX_PUBLISHER    L"应物音形足下输入法"
-#define ZX_VERSION      L"0.4.3"
+#define ZX_VERSION      L"0.4.4"
 #define ZX_DIRNAME      L"Zuxia"
 #define ZX_TSF_DLL      L"ZuxiaTSF.dll"
 #define ZX_ARP_KEY      L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ZuxiaIME"
