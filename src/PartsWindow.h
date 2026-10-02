@@ -90,6 +90,7 @@ class CPartsWindow {
 
   void Dismiss();
   void Relayout();
+  void PlaceOnce();
   void BuildLayout(double scale, bool vertical, Layout* out);
   void Paint(HDC dc);
   void EnsureFonts(int big_px, int label_px, int title_px);
@@ -124,6 +125,10 @@ class CPartsWindow {
   bool vertical_ = true;
   Layout layout_;
   double scale_ = 1.0;
+  // Relayout 里自己的 SetWindowPos 可能把窗口挪到另一个 DPI 的屏幕上，
+  // 系统当场发来 WM_DPICHANGED：记下来，这一轮排完按新 DPI 再排一次。
+  bool relayouting_ = false;
+  bool relayout_again_ = false;
 
   // zoom_ is what the user asked for; the window may be drawn smaller to fit
   // the work area. The anchor is the corner that stays put when the content

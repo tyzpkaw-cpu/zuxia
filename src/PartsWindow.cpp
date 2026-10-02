@@ -279,6 +279,17 @@ RECT WorkAreaAt(POINT point) {
   return work;
 }
 
+// 窗口跨在两块屏上时，算占得多的那块（Windows 定窗口用哪块屏的 DPI 也是这么算的）。
+RECT WorkAreaOf(const RECT& rect) {
+  RECT work = {};
+  MONITORINFO info = {};
+  info.cbSize = sizeof(info);
+  const HMONITOR monitor = MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST);
+  if (monitor && GetMonitorInfoW(monitor, &info)) return info.rcWork;
+  SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+  return work;
+}
+
 DWORD ForegroundPid() {
   const HWND foreground = GetForegroundWindow();
   if (!foreground) return 0;
@@ -352,6 +363,65 @@ void WriteDword(HKEY key, const wchar_t* name, LONG value) {
   const DWORD raw = static_cast<DWORD>(value);
   RegSetValueExW(key, name, 0, REG_DWORD, reinterpret_cast<const BYTE*>(&raw),
                  sizeof(raw));
+}
+
+std::wstring ReadString(HKEY key, const wchar_t* name) {
+  wchar_t buffer[64] = {};
+  DWORD type = 0;
+  DWORD size = sizeof(buffer) - sizeof(wchar_t);  // 末尾留一个 0
+  if (RegQueryValueExW(key, name, nullptr, &type,
+                       reinterpret_cast<BYTE*>(buffer), &size) != ERROR_SUCCESS ||
+      type != REG_SZ) {
+    return std::wstring();
+  }
+  return std::wstring(buffer);
+}
+
+void WriteString(HKEY key, const wchar_t* name, const wchar_t* value) {
+  RegSetValueExW(key, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value),
+                 static_cast<DWORD>((lstrlenW(value) + 1) * sizeof(wchar_t)));
+}
+
+// 位置存成「哪块屏 ＋ 在它工作区里的比例」，单位万分之一。各个程序的 DPI 模式
+// 不一样，同一个位置看到的坐标也不一样（只认系统 DPI 的程序，在另一种缩放的
+// 屏上坐标是换算过的）；比例在哪个程序里都一样。
+constexpr int kFractionOne = 10000;
+
+// 锚点夹进工作区。右／下锚点量的是右边／下边，探测点要往里退一格，所以范围差一。
+POINT ClampAnchor(POINT anchor, bool right, bool bottom, const RECT& work) {
+  anchor.x = right ? std::clamp(anchor.x, work.left + 1, work.right)
+                   : std::clamp(anchor.x, work.left, work.right - 1);
+  anchor.y = bottom ? std::clamp(anchor.y, work.top + 1, work.bottom)
+                    : std::clamp(anchor.y, work.top, work.bottom - 1);
+  return anchor;
+}
+
+struct MonitorMatch {
+  const wchar_t* device;
+  RECT work;
+  bool found;
+};
+
+BOOL CALLBACK MatchMonitor(HMONITOR monitor, HDC, LPRECT, LPARAM param) {
+  auto* match = reinterpret_cast<MonitorMatch*>(param);
+  MONITORINFOEXW info = {};
+  info.cbSize = sizeof(info);
+  if (GetMonitorInfoW(monitor, reinterpret_cast<MONITORINFO*>(&info)) &&
+      lstrcmpiW(info.szDevice, match->device) == 0) {
+    match->work = info.rcWork;
+    match->found = true;
+    return FALSE;
+  }
+  return TRUE;
+}
+
+// 按显示器名（\\.\DISPLAY2 这种）找它现在的工作区；那块屏拔掉了就找不到。
+bool WorkAreaOfDevice(const wchar_t* device, RECT* work) {
+  MonitorMatch match = {device, {}, false};
+  EnumDisplayMonitors(nullptr, nullptr, MatchMonitor,
+                      reinterpret_cast<LPARAM>(&match));
+  if (match.found) *work = match.work;
+  return match.found;
 }
 
 }  // namespace
@@ -653,6 +723,23 @@ void CPartsWindow::BuildLayout(double scale, bool vertical, Layout* out) {
 
 void CPartsWindow::Relayout() {
   if (!hwnd_ || chars_.empty()) return;
+  if (relayouting_) {
+    relayout_again_ = true;  // 见 relayouting_ 的注释
+    return;
+  }
+  relayouting_ = true;
+  // 窗口换了屏、DPI 变了，就按新 DPI 再排一次。排好的窗口整个落在一块屏的
+  // 工作区里，第二轮就稳定了；最多三轮，防万一。
+  for (int pass = 0; pass < 3; ++pass) {
+    relayout_again_ = false;
+    const UINT dpi = Dpi();
+    PlaceOnce();
+    if (!relayout_again_ && Dpi() == dpi) break;
+  }
+  relayouting_ = false;
+}
+
+void CPartsWindow::PlaceOnce() {
   if (!has_anchor_) DefaultAnchor();
   const POINT probe = {anchor_right_ ? anchor_.x - 1 : anchor_.x,
                        anchor_bottom_ ? anchor_.y - 1 : anchor_.y};
@@ -717,11 +804,14 @@ void CPartsWindow::AnchorToWindow() {
   RECT rc = {};
   if (!hwnd_ || !GetWindowRect(hwnd_, &rc)) return;
   const POINT center = {(rc.left + rc.right) / 2, (rc.top + rc.bottom) / 2};
-  const RECT work = WorkAreaAt(center);
+  const RECT work = WorkAreaOf(rc);
   anchor_right_ = center.x > (work.left + work.right) / 2;
   anchor_bottom_ = center.y > (work.top + work.bottom) / 2;
-  anchor_.x = anchor_right_ ? rc.right : rc.left;
-  anchor_.y = anchor_bottom_ ? rc.bottom : rc.top;
+  const POINT corner = {anchor_right_ ? rc.right : rc.left,
+                        anchor_bottom_ ? rc.bottom : rc.top};
+  // 锚点要落在这块屏的工作区里，Relayout 才认这块屏、把窗口整个收进来；
+  // 不然窗口跨在两块屏上放手，锚点那个角可能在另一块屏上，窗口就跳过去了。
+  anchor_ = ClampAnchor(corner, anchor_right_, anchor_bottom_, work);
   has_anchor_ = true;
 }
 
@@ -732,17 +822,36 @@ void CPartsWindow::LoadPlacement() {
     return;
   }
   bool has_x = false, has_y = false, has_anchor = false, has_zoom = false;
+  bool has_fx = false, has_fy = false;
   const LONG x = ReadDword(key, L"X", &has_x);
   const LONG y = ReadDword(key, L"Y", &has_y);
   const LONG anchor = ReadDword(key, L"Anchor", &has_anchor);
   const LONG zoom = ReadDword(key, L"Zoom", &has_zoom);
+  const LONG fx = ReadDword(key, L"FX", &has_fx);
+  const LONG fy = ReadDword(key, L"FY", &has_fy);
+  const std::wstring device = ReadString(key, L"Monitor");
   RegCloseKey(key);
   if (has_zoom && zoom >= 40 && zoom <= 400) {
     zoom_ = std::clamp(zoom / 100.0, kMinZoom, kMaxZoom);
   }
+  const bool right = has_anchor && (anchor & 1) != 0;
+  const bool bottom = has_anchor && (anchor & 2) != 0;
+  // 先按「哪块屏 ＋ 比例」找（见 kFractionOne 的注释）。
+  RECT work = {};
+  if (!device.empty() && has_fx && has_fy && fx >= 0 && fx <= kFractionOne &&
+      fy >= 0 && fy <= kFractionOne && WorkAreaOfDevice(device.c_str(), &work)) {
+    const int w = static_cast<int>(work.right - work.left);
+    const int h = static_cast<int>(work.bottom - work.top);
+    const POINT at = {work.left + MulDiv(w, static_cast<int>(fx), kFractionOne),
+                      work.top + MulDiv(h, static_cast<int>(fy), kFractionOne)};
+    anchor_ = ClampAnchor(at, right, bottom, work);
+    anchor_right_ = right;
+    anchor_bottom_ = bottom;
+    has_anchor_ = true;
+    return;
+  }
+  // 没存比例（0.4.2 存的）或者那块屏的名字变了：退回坐标。
   if (has_x && has_y) {
-    const bool right = has_anchor && (anchor & 1) != 0;
-    const bool bottom = has_anchor && (anchor & 2) != 0;
     const POINT probe = {right ? x - 1 : x, bottom ? y - 1 : y};
     // 那块屏幕已经拔掉了就当没存过。
     if (MonitorFromPoint(probe, MONITOR_DEFAULTTONULL)) {
@@ -765,6 +874,21 @@ void CPartsWindow::SavePlacement() const {
     WriteDword(key, L"X", anchor_.x);
     WriteDword(key, L"Y", anchor_.y);
     WriteDword(key, L"Anchor", (anchor_right_ ? 1 : 0) | (anchor_bottom_ ? 2 : 0));
+    const POINT probe = {anchor_right_ ? anchor_.x - 1 : anchor_.x,
+                         anchor_bottom_ ? anchor_.y - 1 : anchor_.y};
+    MONITORINFOEXW info = {};
+    info.cbSize = sizeof(info);
+    const HMONITOR monitor = MonitorFromPoint(probe, MONITOR_DEFAULTTONEAREST);
+    if (monitor && GetMonitorInfoW(monitor, reinterpret_cast<MONITORINFO*>(&info))) {
+      const RECT& work = info.rcWork;
+      const int w = std::max(1, static_cast<int>(work.right - work.left));
+      const int h = std::max(1, static_cast<int>(work.bottom - work.top));
+      const int dx = std::clamp(static_cast<int>(anchor_.x - work.left), 0, w);
+      const int dy = std::clamp(static_cast<int>(anchor_.y - work.top), 0, h);
+      WriteString(key, L"Monitor", info.szDevice);
+      WriteDword(key, L"FX", MulDiv(dx, kFractionOne, w));
+      WriteDword(key, L"FY", MulDiv(dy, kFractionOne, h));
+    }
   }
   WriteDword(key, L"Zoom", static_cast<LONG>(std::lround(zoom_ * 100)));
   RegCloseKey(key);
@@ -868,6 +992,8 @@ void CPartsWindow::EndDrag(bool keep) {
   if (hwnd_ && GetCapture() == hwnd_) ReleaseCapture();
   if (keep && changed && (was == Drag::kMove || was == Drag::kResize)) {
     AnchorToWindow();
+    // 拖动放手：收进放下的那块屏；拖到了另一个 DPI 的屏上，就在这时按新 DPI 重排。
+    if (was == Drag::kMove) Relayout();
     SavePlacement();
   }
 }
@@ -1039,7 +1165,10 @@ LRESULT CPartsWindow::OnMessage(UINT msg, WPARAM w, LPARAM l) {
       if (w == kForegroundTimer) CheckForeground();
       return 0;
     case WM_DPICHANGED:
-      Relayout();
+      // 换到了另一个 DPI 的屏幕（或者改了缩放设置）。正在拖动就先不重排：
+      // 按旧锚点重排会把窗口拽回原来那块屏；窗口一变大小，大半边也可能又
+      // 落回原来那块屏，来回跳。放手时 EndDrag 会按新屏幕排。
+      if (drag_ != Drag::kMove) Relayout();
       return 0;
     case WM_ERASEBKGND:
       return 1;
